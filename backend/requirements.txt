@@ -1,0 +1,7 @@
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+python-multipart==0.0.9
+python-pptx==1.0.2
+pillow==10.4.0
+requests==2.32.3
+PyMuPDF==1.24.10

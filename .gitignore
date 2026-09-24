@@ -1,0 +1,30 @@
+# Local inputs, evidence, and history
+.local/
+.env
+.env.*
+!.env.example
+*.env
+*.pem
+*.key
+.venv/
+.venv-*/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+node_modules/
+dist/
+.vite/
+test-results/
+playwright-report/
+*.tsbuildinfo
+*.log
+learning/
+# Private presentations and rendered documents
+*.pptx
+!backend/assets/ppt_template.pptx
+*.pdf
+*.docx
+*.zip
+.DS_Store
+Thumbs.db

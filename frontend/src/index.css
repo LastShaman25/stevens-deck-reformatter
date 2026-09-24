@@ -1,0 +1,46 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+}
+body {
+  margin: 0;
+  background:
+    radial-gradient(1100px 420px at 12% -8%, rgba(72,149,207,0.10), transparent 60%),
+    radial-gradient(900px 480px at 108% 0%, rgba(163,37,55,0.07), transparent 55%),
+    #f4f6f8;
+  color: #363d45;
+  font-family: Arial, Helvetica, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+@layer components {
+  .eyebrow {
+    @apply text-[11px] font-extrabold tracking-[0.14em] text-stevens-blue uppercase;
+  }
+  .btn-red {
+    @apply inline-flex items-center gap-2 rounded-lg bg-gradient-to-b from-stevens-red to-stevens-reddark px-4 py-2 text-sm font-extrabold text-white shadow-sm transition hover:brightness-110 active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center gap-2 rounded-lg border border-stevens-lightgray bg-white px-4 py-2 text-sm font-extrabold text-stevens-ink transition hover:border-stevens-blue hover:text-stevens-blue;
+  }
+  .btn-green {
+    @apply inline-flex items-center gap-2 rounded-lg bg-[#1f8a5b] px-4 py-2 text-sm font-extrabold text-white transition hover:brightness-110 active:scale-[0.98];
+  }
+  .card {
+    @apply rounded-xl2 border border-stevens-lightgray bg-white shadow-card;
+  }
+  /* Stevens diamond accent (the brand mark motif) */
+  .diamond {
+    @apply inline-block rotate-45 rounded-[3px];
+  }
+  /* pill toggle */
+  .toggle {
+    @apply relative h-6 w-11 shrink-0 rounded-full transition-colors duration-200;
+  }
+  .toggle-knob {
+    @apply absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform duration-200;
+  }
+}
