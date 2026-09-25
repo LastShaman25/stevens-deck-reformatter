@@ -246,3 +246,12 @@ test('mandatory QA findings cannot be manually approved',async()=>{
   expect(screen.queryByRole('button',{name:/Approve selected/})).not.toBeInTheDocument();
   expect(screen.getAllByText('QA must pass after repair. Manual approval cannot clear this finding.').length).toBeGreaterThan(0);
 });
+
+
+test('preparation errors explain why QA has not started',async()=>{
+  const generation={...reviewGeneration,findings:[],ai_pipeline:{status:'error',changed_objects:0,configuration:ai,
+    calls:[{role:'source_decision',status:'completed'}],attempts:[],
+    failure_message:'Source/template preparation failed: source canvas mismatch.'}};
+  vi.stubGlobal('fetch',vi.fn(()=>response({...reviewSession,generation})));render(<App/>);
+  expect(await screen.findByText('Source/template preparation failed: source canvas mismatch.')).toBeVisible();
+});

@@ -37,7 +37,9 @@ def convert(pdf_path, pptx_path, preview_path):
         if doc.needs_pass: raise ValueError('Upload an unlocked PDF.')
         if not 1<=len(doc)<=100: raise ValueError('PDF redesign supports 1–100 pages.')
         if doc.embfile_count(): raise ValueError('PDF attachments cannot be preserved in this workflow. Remove attachments before uploading.')
-        prs=Presentation();prs.slide_width=Inches(13.333333);prs.slide_height=Inches(7.5)
+        from slide_engine.template_policy import CANVAS
+        prs=Presentation();prs.slide_width,prs.slide_height=CANVAS
+        canvas_w,canvas_h=(v/914400 for v in CANVAS)
         evidence=[];characters=0
         for i,page in enumerate(doc):
             if page.first_widget or page.first_annot:
@@ -53,8 +55,8 @@ def convert(pdf_path, pptx_path, preview_path):
             if any(line.get('dir',(1,0))!=(1,0) for line in lines):
                 raise ValueError(f'PDF page {i+1} has rotated text; normalize its orientation before redesign.')
             size=page.rect
-            scale=min(13.333333/size.width,7.5/size.height)
-            dx=(13.333333-size.width*scale)/2;dy=(7.5-size.height*scale)/2
+            scale=min(canvas_w/size.width,canvas_h/size.height)
+            dx=(canvas_w-size.width*scale)/2;dy=(canvas_h-size.height*scale)/2
             def box(rect):
                 r=fitz.Rect(rect)
                 return [Inches(dx+r.x0*scale),Inches(dy+r.y0*scale),Inches(max(.001,r.width*scale)),Inches(max(.001,r.height*scale))]
@@ -81,6 +83,13 @@ def convert(pdf_path, pptx_path, preview_path):
                 if rect.is_empty: continue
                 resolution=min(2,3000/max(size.width,size.height))
                 pix=graphic_page.get_pixmap(matrix=fitz.Matrix(resolution,resolution),clip=rect,alpha=True)
+                # White-on-white background drawings have no visible information.
+                # Do not turn them into a large opaque picture on the new cover.
+                from PIL import Image
+                pixels=Image.open(BytesIO(pix.tobytes('png'))).convert('RGBA')
+                bg=tuple(round(c*255) for c in full_fills[-1]['fill']) if full_fills else (255,255,255)
+                flattened=Image.new('RGBA',pixels.size,(*bg,255));flattened.alpha_composite(pixels)
+                if all(lo==hi==c for (lo,hi),c in zip(flattened.convert('RGB').getextrema(),bg)): continue
                 picture=slide.shapes.add_picture(BytesIO(pix.tobytes('png')),*box(rect))
                 picture.name=f'PDF page {i+1} graphic {graphic_count+1}'
                 graphic_count+=1

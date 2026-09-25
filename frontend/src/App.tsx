@@ -260,6 +260,7 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
               <button className="btn-ghost" onClick={async()=>{await startOver();onHome?.();}}>Finish and delete</button></div>
             <p className="mt-2 text-xs text-stevens-gray">Every mandatory QA review must pass. Manual approval cannot override QA. Download and finish deletes processing files.</p></>}
           {generation?.ai_pipeline && <div className="mt-4 text-sm"><b>AI pipeline: {generation.ai_pipeline.status}</b>
+            {generation.ai_pipeline.failure_message && <p className="mt-2 text-stevens-red">{generation.ai_pipeline.failure_message}</p>}
             {generation.source_decisions?.[String(current)] && <p className="mt-2">This slide: {generation.source_decisions[String(current)].action==='keep_original'?'kept unchanged':'redesigned'} · {generation.source_decisions[String(current)].removed_artwork} artwork elements removed. {!!generation.source_decisions[String(current)].extracted_logos && <>{generation.source_decisions[String(current)].extracted_logos} embedded logos preserved. </>}{generation.source_decisions[String(current)].reason}</p>}
             <p>{generation.ai_pipeline.calls.length} pipeline steps · {generation.ai_pipeline.changed_objects} object edits</p>
             {generation.usage && <p>Upload total: {generation.usage.upload_requests} requests · {generation.usage.upload_tokens.toLocaleString()} recorded tokens (includes retries and QA).</p>}

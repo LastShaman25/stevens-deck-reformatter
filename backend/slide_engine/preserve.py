@@ -44,7 +44,7 @@ def build(src_path, out_path, template_path, revisions=None, source_decisions=No
         from app.ai.source_decisions import validate
         for key,value in source_decisions.items():
             decision=validate(value,source,int(key),inv.source_sha256)
-            if decision.action=='keep_original' and (source.slide_width!=dest.slide_width or source.slide_height!=dest.slide_height):
+            if decision.action=='keep_original' and not T.canvas_matches(source.slide_width,source.slide_height,(dest.slide_width,dest.slide_height)):
                 raise ValueError('An unchanged source slide must have the template canvas dimensions.')
             for item in inv.items:
                 if item.id in decision.remove_ids:
@@ -346,6 +346,8 @@ def build(src_path, out_path, template_path, revisions=None, source_decisions=No
                     # geometry. A font floor alone crowds PDF lines/equations.
                     if extracted_role or span is not None:
                         tf.word_wrap = True
+                    if extracted_role and extracted_role.get('font_size'):
+                        tf.margin_top=tf.margin_bottom=tf.margin_left=tf.margin_right=0
                     tf.auto_size = MSO_AUTO_SIZE.NONE
                     for p in tf.paragraphs:
                         for r in p.runs:
@@ -355,7 +357,7 @@ def build(src_path, out_path, template_path, revisions=None, source_decisions=No
                             # for diagrams; structural lint will expose unsupported palette decisions.
                             if extracted_role:
                                 r.font.color.rgb = RGBColor.from_string(B.WHITE if cover else B.INK)
-                                if not is_title: r.font.size=Pt(max(16,r.font.size.pt))
+                                if not is_title: r.font.size=Pt(extracted_role.get('font_size',max(16,r.font.size.pt)))
                             elif r.font.color.type is None and not child.has_table:
                                 r.font.color.rgb = RGBColor.from_string(B.INK)
                             else:

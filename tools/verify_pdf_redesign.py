@@ -16,14 +16,24 @@ def main():
     p.add_argument('--live',action='store_true',required=True)
     p.add_argument('--output',type=Path,required=True)
     p.add_argument('--math-fixture',action='store_true',help='Also test tightly spaced PDF math and annotation lines.')
+    p.add_argument('--cover-footer-fixture',action='store_true',help='Test a white cover background, multiple metadata rows and a low footnote.')
     args=p.parse_args()
     if args.output.exists():p.error('Use a new evidence directory.')
     if not providers.capabilities()['configured']:p.error('Configure the AI providers first.')
     args.output.mkdir(parents=True)
     pdf=fitz.open();page=pdf.new_page(width=960,height=540)
-    page.insert_text((50,100),'Synthetic project update',fontsize=32)
-    page.insert_text((50,170),'Research and prototype milestones',fontsize=20)
-    page.insert_text((50,420),'Presenter: Synthetic reviewer',fontsize=18)
+    if args.cover_footer_fixture:
+        page.draw_rect((10,10,950,530),color=(1,1,1),fill=(1,1,1))
+        for y,text,size in [(60,'Introduction and syllabus',20),(125,'Synthetic Course',42),
+                            (185,'Autumn 2026',30),(310,'Presenters: Taylor Example and Jordan Sample',20),
+                            (370,'Tuesday 10-11 am in room 101',20),
+                            (515,'Questions, corrections and requests for clarification are welcome. Please keep them on topic.',11),
+                            (533,'1',10)]:
+            page.insert_text((50,y),text,fontsize=size)
+    else:
+        page.insert_text((50,100),'Synthetic project update',fontsize=32)
+        page.insert_text((50,170),'Research and prototype milestones',fontsize=20)
+        page.insert_text((50,420),'Presenter: Synthetic reviewer',fontsize=18)
     if args.math_fixture:
         page=pdf.new_page(width=960,height=540)
         page.insert_text((50,60),'Vector product rule',fontsize=30)

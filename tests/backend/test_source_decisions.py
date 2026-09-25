@@ -244,3 +244,21 @@ def test_protected_code_and_logo_typography_survive_and_tampering_blocks(tmp_pat
     else:copied.text_frame.paragraphs[0].runs[0].font.name='Arial'
     out.save(candidate)
     assert any(f['code']=='PROTECTED_TYPOGRAPHY_ALTERED' for f in audit(source,candidate,report)['findings'])
+
+
+@pytest.mark.parametrize('difference',[1,10000])
+def test_keep_original_canvas_rounding_is_validated_early(tmp_path,difference):
+    p=Presentation(grounded.TEMPLATE_PATH)
+    for sid,slide in list(zip(p.slides._sldIdLst,p.slides)):
+        if slide.slide_layout.name=='1_Title Slide': continue
+        p.part.drop_rel(sid.rId);p.slides._sldIdLst.remove(sid)
+    p.slide_width-=difference
+    source=tmp_path/'rounded.pptx';p.save(source)
+    p,digest,objects,value=decision(source,'keep_original')
+    if difference==1:
+        source_decisions.validate(value,p,0,digest)
+        report=grounded.build_deck(source,tmp_path/'result.pptx',source_decisions={'0':value})
+        assert audit(source,tmp_path/'result.pptx',report)['status']=='passed'
+    else:
+        with pytest.raises(ValueError,match='canvas differs'):
+            source_decisions.validate(value,p,0,digest)

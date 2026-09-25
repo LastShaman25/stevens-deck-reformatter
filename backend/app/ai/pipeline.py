@@ -306,6 +306,7 @@ def execute(sess,candidate,report,directory,repair_passes=1,progress=lambda **kw
                     # One bounded contract correction, before any native edits.
                     # Invalid plans never reach the renderer or approval gate.
                     payload['validation_error']=failed
+                    payload['previous_plan']=result.get('data')
                     payload['instruction']='Correct the rejected plan against the supplied editable object IDs and constraints. Return the complete schema.'
                     ai.setdefault('plan_validation_errors',[]).append({'output_slide':i,'attempt':attempt,
                         'validation_attempt':validation_attempt,'message':failed})
@@ -315,7 +316,12 @@ def execute(sess,candidate,report,directory,repair_passes=1,progress=lambda **kw
             ai['attempts'].append({'attempt':attempt,'accepted':False,'reason':failed})
             if not accepted:
                 problem=error_result(failed)
-                return report,{**current_checks,'ai_redesign':problem,'ai_visual_review':{'status':'not_run','findings':[]}},ai
+                # A rejected layout must not suppress QA of the rendered native
+                # composition. Its review is diagnostic: redesign remains error.
+                visual_check,final_reviews=review(current,current_report,current_render,attempt)
+                shutil.copyfile(current,candidate)
+                ai.update(final_reviews=final_reviews,candidate_sha256=sha256(candidate),completed_calls=len(ai['calls']))
+                return current_report,{**current_checks,'ai_redesign':problem,'ai_visual_review':visual_check},ai
             visual_check=error_result('The requested repair did not complete: '+failed)
             break
         proposed=directory/f'ai-attempt-{attempt}.pptx'

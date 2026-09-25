@@ -41,6 +41,14 @@ async def lifespan(app):
 
 app = FastAPI(title="Stevens Slide Studio", version="1.1.0", lifespan=lifespan)
 
+
+@app.middleware('http')
+async def frontend_freshness(request, call_next):
+    response=await call_next(request)
+    if response.headers.get('content-type','').startswith('text/html'):
+        response.headers['Cache-Control']='no-store'
+    return response
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],

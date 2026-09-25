@@ -134,6 +134,10 @@ def validate(value,prs,index,digest,require_logo_review=True):
         raise ValueError('Every artwork removal must agree with the explicit element decision.')
     if decision.action=='keep_original' and (not decision.matches_template or decision.remove_ids or decision.logo_extractions):
         raise ValueError('Keeping the source requires a template match and no removal decisions.')
+    if decision.action=='keep_original':
+        from slide_engine.template_policy import canvas_matches
+        if not canvas_matches(prs.slide_width,prs.slide_height):
+            raise ValueError('The source canvas differs from the template; choose redesign, not keep_original.')
     if index==0 and decision.action=='keep_original' and prs.slides[index].slide_layout.name!='1_Title Slide':
         raise ValueError('An unchanged first slide must already use the template first-page layout.')
     cover_map={}
@@ -245,6 +249,8 @@ def run(sess,progress,generate=providers.generate,template_images=(),indices=Non
         wanted={'1_Title Slide'} if i==0 else {'Title Only','Title and Content','Section Header','Thank You Slide'}
         references=[(label,path) for label,path in template_images if label.removeprefix('APPROVED TEMPLATE: ') in wanted]
         payload={'stage':'source_decisions','source_slide':i,'source_ordinal':i+1,
+            'source_canvas_emu':[prs.slide_width,prs.slide_height],
+            'template_canvas_emu':[12192000,6858000],
             'is_first_slide':i==0,'source_layout':slide.slide_layout.name,'objects':objects,
             'template_references':[label for label,_ in references],
             'findings':[f for f in feedback if f.get('source_slide')==i],

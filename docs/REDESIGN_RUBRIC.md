@@ -1,6 +1,6 @@
 # Stevens redesign and output QA rubric
 
-Version: `mandatory-pass-spacing-9` · September 25, 2026
+Version: `cover-photo-clear-10` · September 25, 2026
 
 ## Governing principle
 
@@ -50,7 +50,7 @@ Coordinates below are inches in the bundled 13.333 × 7.5 template.
 | --- | ---: | ---: | ---: | ---: |
 | Interior content box | 0.70 | 0.40 | 11.70 | 6.05 |
 | Cover title | 6.917 | 2.739 | 5.693 | 2.255 |
-| Cover supporting text | 7.236 | 5.021 | 5.374 | 1.664 |
+| Cover supporting text | 7.75 | 5.021 | 4.86 | 1.664 |
 | Cover supporting graphics | 0.45 | 1.15 | 5.95 | 5.30 |
 | Section title (below top-right logo) | 7.236 | 2.50 | 5.374 | 3.22 |
 | Section supporting text | 7.50 | 5.90 | 5.11 | 1.02 |
@@ -248,3 +248,6 @@ Mandatory pass and spacing enforcement (policy 14 / rubric 9):
 - The first output slide must use the native `1_Title Slide` layout and contain extracted title text in its title region. Check this independently before any preserved-slide exemption. A failed or incomplete preview is not an approved redesign.
 - Preserve small source text proportions during initial composition; do not apply a body-font floor to tightly positioned PDF lines. The planner must allocate box height and adjacent gaps together with font size. Reject newly introduced text-box collisions and worsening text-fit estimates before rendering. Existing collisions, contained text and math still require screenshot QA.
 - Math QA checks symbols against the original, clear superscript/subscript and fraction spacing, annotation association, and readability. Unused space is a defect only when a better use of it is needed for legibility; intentional whitespace is allowed.
+
+
+Cover correction (policy 15): keep all ordinary cover text, including bottom notes and metadata, in the right-hand text regions. The details region starts at x=7.75 to clear the sloping photo edge. Flow metadata using estimated wrapped-line heights and consistent spacing. A text-only source must not produce a blank source-page picture or contrast panel over the campus photo. All wording remains protected. PDF canvas dimensions use exact template EMUs; a maximum two-EMU rounding difference is allowed for unchanged native slides, while actual dimension mismatches return to the source decision stage before composition. This prevents the one-EMU PDF mismatch from aborting the pipeline before QA.

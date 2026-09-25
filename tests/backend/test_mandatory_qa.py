@@ -65,3 +65,29 @@ def test_invalid_local_input_is_not_retried(openai_config,monkeypatch,tmp_path):
     monkeypatch.setattr(providers.requests,'post',lambda *a,**kw:pytest.fail('Must not send invalid input'))
     r=providers.generate('planner','JSON',{},images=[('missing',tmp_path/'missing.png')])
     assert r['failure_stage']=='request_preparation' and r['request_attempts']==1
+
+
+def test_rejected_layout_still_runs_diagnostic_qa_without_releasing(ai_session,monkeypatch):
+    from app.ai import pipeline,output_qa
+    from test_ai_pipeline import mocked_provider
+    reviewed=[]
+    def provider(role,system,payload,*a,**kw):
+        result=mocked_provider(role,system,payload,*a,**kw)
+        if role=='planner':
+            if payload.get('validation_error'):assert payload['previous_plan']
+            result['data']['objects'][0]['x']=99
+        if role=='reviewer':reviewed.append(role)
+        return result
+    monkeypatch.setattr(pipeline.providers,'generate',provider)
+    checked=[]
+    def qa(*a):
+        checked.append(True)
+        return {n:{'status':'passed','findings':[]} for n in output_qa.CHECKS+('output_qa_visual',)}
+    monkeypatch.setattr(output_qa,'run',qa)
+    r=generations.build(ai_session,mode='ai',repair_passes=0)
+    assert reviewed and checked
+    assert r['checks']['ai_visual_review']['status']=='passed'
+    assert r['checks']['output_qa_visual']['status']=='passed'
+    assert r['checks']['ai_redesign']['status']=='error'
+    assert not generations.download_allowed(r)
+    assert generations.public(r)['ai_pipeline']['failure_message']

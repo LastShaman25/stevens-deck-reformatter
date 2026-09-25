@@ -2,7 +2,7 @@
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
-VERSION = 'mandatory-pass-spacing-9'
+VERSION = 'cover-photo-clear-10'
 Criterion = Literal['content_presence', 'content_accuracy', 'structure_sequence',
                     'spatial_layout', 'visual_legibility', 'graphical_fidelity',
                     'brand_consistency', 'instruction_compliance']
@@ -17,6 +17,11 @@ def channel(criterion):
 
 
 GENERATOR = '''Make the smallest useful change; an already readable slide may remain unchanged.
+On a text-only cover keep the template campus photo fully visible. Transfer ALL native
+cover text, including small bottom notes, dates, schedules and page numbers, to the
+right-hand title/details regions. Classify supplementary text as footer/caption where
+appropriate and allocate readable spacing. Never retain its former white background
+as an inset panel over the template photograph. Do not discard meaningful fine print.
 For PDF line boxes and mathematics, plan related lines as a coherent block with room
 for superscripts, subscripts, fractions and annotations. Increasing font size requires
 recomputing box heights and adjacent gaps; never enlarge fonts in unchanged tight boxes.
@@ -100,6 +105,10 @@ decorative shapes or extra accents merely to make a different-looking slide. Exp
 specific defect or user instruction motivating changes; keep already-correct areas intact.'''
 
 QA = '''Audit all eight defect categories for every slide, using evidence. For redesign,
+For a text-only source cover, reject any white source-page inset covering the template
+photo. All title, metadata and meaningful fine print belong in the right-hand text regions;
+preserve the wording and inspect text fit there. Merely naming the first-page layout is
+not proof of template fidelity. Photo occlusion belongs to spatial_layout.
 Do not pass merely because a repair was attempted or a human approved a finding.
 Recheck every previous acceptance condition against the new render, and inspect for
 new defects. Unresolved review-level findings still inhibit release. Evaluate equations

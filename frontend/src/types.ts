@@ -122,7 +122,7 @@ export interface Generation {
   pdf_available?: boolean;
   download_allowed?: boolean;
   usage?: {upload_requests: number; upload_tokens: number};
-  ai_pipeline?: {status: string; changed_objects: number; completed_calls?: number; configuration: AIConfiguration;
+  ai_pipeline?: {status: string; failure_message?: string | null; changed_objects: number; completed_calls?: number; configuration: AIConfiguration;
     calls: {role: string; provider?: string; model?: string; status: string; message?: string}[];
     attempts: {attempt: number; accepted: boolean; changed_objects?: number; reason?: string}[]} | null;
   generation_id: string;

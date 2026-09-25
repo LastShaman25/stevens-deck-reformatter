@@ -135,9 +135,12 @@ def validate(plan,slide,width,height):
             raise ValueError('The AI plan places an object outside the slide.')
         regions=T.regions(slide)
         if not any(T.contains(rect,r) for r in regions):
-            raise ValueError('Every element must stay within a template content region, above the protected logo/footer band.')
+            raise ValueError(f'Object {ident} box {rect} is outside the permitted template regions {regions}. Keep the complete box inside one region and clear the protected logo/footer band.')
         if T.is_cover(slide) and (ident.endswith('|title') or edit.role=='title') and not T.contains(rect,T.COVER_TITLE):
             raise ValueError('The extracted cover title must stay in the first-page title box.')
+        if T.is_cover(slide) and shape.has_text_frame and shape.text.strip() and not parent and not owner:
+            if not any(T.contains(rect,r) for r in (T.COVER_TITLE,T.COVER_DETAILS)):
+                raise ValueError('Cover text, including notes and footers, must stay in the right-hand template text regions; keep the photo clear.')
         if locked and any(abs(a-b)>.002 for a,b in zip(box,rect)):
             raise ValueError('Rotated/flipped group geometry is locked to preserve meaning.')
         if shape._element.tag in (qn('p:pic'),qn('p:grpSp')) or shape.has_chart:

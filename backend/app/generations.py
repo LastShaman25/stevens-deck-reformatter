@@ -12,7 +12,7 @@ from slide_engine.preserve import CoverageError
 from . import grounded
 from .qa import artifact_coverage, brand_lint, render_verify
 
-POLICY_VERSION = 'mandatory-qa-pass-14'
+POLICY_VERSION = 'cover-photo-clear-15'
 REQUIRED = ('plan_coverage', 'artifact_coverage', 'structural_formatting', 'render_verification')
 QA_REQUIRED = ('ai_visual_review', 'output_qa_coverage', 'output_qa_sequence',
                'output_qa_accuracy', 'output_qa_visual')
@@ -164,12 +164,13 @@ def build(sess, mode='preserve', repair_passes=1):
                     for i, slide in enumerate(__import__('pptx').Presentation(sess.source_path).slides)],
                     'source_to_output_slides':record['source_to_output_slides']}
         redesign_completed=mode!='ai' or ai_checks.get('ai_redesign',{}).get('status') in ('passed','needs_review')
-        if redesign_completed:
+        diagnostic_reviewed=ai_checks.get('ai_visual_review',{}).get('status') in ('passed','needs_review','failed')
+        if redesign_completed or diagnostic_reviewed:
             for name, result in output_qa.run(sess, record, evidence).items(): add_check(record, name, result)
         else:
             for name in output_qa.CHECKS+('output_qa_visual',):
                 add_check(record,name,{'status':'not_run','findings':[],'reason':'Redesign did not complete. Resolve the AI error before output QA.'})
-        if mode=='ai' and redesign_completed:
+        if mode=='ai' and (redesign_completed or diagnostic_reviewed):
             # The request's legacy repair_passes controls the initial planner only.
             # Mandatory QA repair cannot be disabled or waived by that setting.
             repair_from_output_qa(sess,record,evidence,None,progress)
@@ -369,6 +370,7 @@ def public(record):
     value['ai_pipeline']={k:v for k,v in ai.items() if k not in ('attempts','final_reviews')} if ai else None
     if ai:
         value['ai_pipeline']['attempts']=[{k:v for k,v in a.items() if k not in ('plans','reviews')} for a in ai['attempts']]
+        value['ai_pipeline']['failure_message']=' '.join(f.get('message','') for f in record['checks'].get('ai_redesign',{}).get('findings',[])) if record['checks'].get('ai_redesign',{}).get('status')=='error' else None
     value['checks'] = {k: {'status': v['status']} for k,v in record['checks'].items()}
     value['findings'] = [{**{k:v for k,v in f.items() if k not in ('expected','actual','evidence')},
                           'can_approve':can_approve(record,f)} for f in record['findings']]

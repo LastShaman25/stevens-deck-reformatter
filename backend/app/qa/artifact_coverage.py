@@ -42,7 +42,7 @@ def audit(source_path, candidate_path, report):
         if kept:
             original=source_prs.slides[si]
             if (mapping.get(str(si))!=[oi] or not T.is_preserved(slide)
-                    or source_prs.slide_width!=prs.slide_width or source_prs.slide_height!=prs.slide_height
+                    or not T.canvas_matches(source_prs.slide_width,source_prs.slide_height,(prs.slide_width,prs.slide_height))
                     or inventory.relationship_signature(original.part,normalize_blob=T.unchanged_blob)!=inventory.relationship_signature(slide.part,normalize_blob=T.unchanged_blob)):
                 findings.append({'code':'UNCHANGED_SLIDE_ALTERED','output_slide':oi,'severity':'blocking'})
             for origin,part,shape in inventory.source_objects(slide):

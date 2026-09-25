@@ -50,7 +50,7 @@ def test_scanned_pdf_does_not_silently_become_a_thumbnail():
     assert r.status_code==400 and 'OCR' in r.text
 
 
-def test_failed_redesign_does_not_spend_calls_on_output_qa(ai_session,monkeypatch):
+def test_failed_source_preparation_does_not_spend_calls_on_output_qa(ai_session,monkeypatch):
     monkeypatch.setattr(providers,'generate',lambda *a,**kw:{'status':'timeout','message':'AI request timed out.'})
     def forbidden(*a,**kw):raise AssertionError('Output QA must not run on a failed redesign')
     monkeypatch.setattr(output_qa,'run',forbidden)
@@ -120,3 +120,35 @@ def test_cover_photo_is_not_an_old_slide_inset(tmp_path):
     assert abs(retained.width/Inches(T.COVER_SUPPORT[2])-1)<.001 or abs(retained.height/Inches(T.COVER_SUPPORT[3])-1)<.001
     assert T.check(candidate)['status']=='passed'
     assert audit(source,candidate,report)['status']=='passed'
+
+
+def test_white_pdf_background_is_not_imported_as_a_cover_picture(tmp_path):
+    doc=fitz.open();page=doc.new_page(width=960,height=540)
+    page.draw_rect((10,10,930,510),color=(1,1,1),fill=(1,1,1))
+    page.insert_text((70,90),'Cover title',fontsize=32)
+    page.insert_text((70,515),'Keep this meaningful bottom note.',fontsize=11)
+    source=tmp_path/'cover.pdf';doc.save(source);doc.close()
+    imported=tmp_path/'cover.pptx'
+    pdf_import.convert(source,imported,lambda i:tmp_path/f'original-{i}.png')
+    p=Presentation(imported)
+    assert (p.slide_width,p.slide_height)==T.CANVAS
+    assert not any(s.shape_type==13 for s in p.slides[0].shapes)
+    candidate=tmp_path/'candidate.pptx';report=grounded.build_deck(imported,candidate)
+    slide=Presentation(candidate).slides[0]
+    assert not any(s.name==T.BACKGROUND_NAME for s in slide.shapes)
+    note=next(s for s in slide.shapes if s.has_text_frame and 'meaningful bottom note' in s.text)
+    assert T.contains([v/T.EMU for v in (note.left,note.top,note.width,note.height)],T.COVER_DETAILS)
+    assert audit_pdf_cover(imported,candidate,report)=='passed'
+    out=Presentation(candidate);out.slides[0].shapes[-1].left=0;out.save(candidate)
+    assert any(f['code']=='COVER_TEXT_POSITION' for f in T.check(candidate)['findings'])
+
+
+def audit_pdf_cover(source,candidate,report):
+    from app.qa.artifact_coverage import audit
+    return audit(source,candidate,report)['status']
+
+
+def test_frontend_document_is_not_cached_across_restarts():
+    response=TestClient(app).get('/')
+    assert response.status_code==200
+    assert response.headers['cache-control']=='no-store'

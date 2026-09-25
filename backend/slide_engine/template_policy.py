@@ -9,7 +9,9 @@ import math
 CONTENT = (.70, .40, 11.70, 6.05)
 COVER_TITLE = (6.917, 2.739, 5.693, 2.255)
 COVER_SUPPORT = (.45, 1.15, 5.95, 5.30)
-COVER_DETAILS = (7.236, 5.021, 5.374, 1.664)
+# The left edge of the burgundy panel slopes right toward the bottom; keep
+# the entire details block, including bottom notes, clear of that diagonal.
+COVER_DETAILS = (7.75, 5.021, 4.86, 1.664)
 # Start below the complete top-right mark, rather than using the layout's
 # oversized title placeholder whose top edge shares the logo's vertical band.
 SECTION_TITLE = (7.236, 2.50, 5.374, 3.22)
@@ -17,6 +19,12 @@ SECTION_DETAILS = (7.50, 5.90, 5.11, 1.02)
 SECTION_SUPPORT = (.45, 1.15, 5.95, 5.30)
 BACKGROUND_NAME = 'template-source-background'
 EMU = 914400
+CANVAS = (12192000, 6858000)
+
+
+def canvas_matches(width, height, expected=CANVAS):
+    # Decimal inches from PDF import can round one EMU below the native size.
+    return all(abs(a-b)<=2 for a,b in zip((width,height),expected))
 
 
 def is_cover(slide):
@@ -101,7 +109,7 @@ def contract(slide):
                 'cover_photo_replaced':slide._element.cSld.get('name')=='sss:cover-source-photo',
                 'source_photo_rule':'When cover_photo_replaced is true, the meaningful source photograph replaces the inherited campus photo. A clear white matte around it is intentional. Do not restore a second campus photo, old source background panel or whole-slide inset.',
                 'approved_template_artwork':'The campus/statue photo on the left, burgundy field on the right, top-right white Stevens mark and bottom rule are approved inherited cover artwork. The cover has NO protected bottom-left interior wordmark. These assets are permitted branding, not unsupported source claims or newly invented content.',
-                'rule':'Extract native elements; keep the title in title_box, supporting text in details_box and source graphics in support_box. These are inches from the TOP LEFT; the title/details boxes are INSIDE the right burgundy panel. No whole-slide thumbnail. Interior content-box/footer rules do NOT apply to this cover.'}
+                'rule':'Extract native elements; keep the title in title_box and ALL supporting text, including footnotes/page numbers, in the right-hand title/details boxes. Preserve meaningful fine print. Do not put a white source background or native text over the campus photo. Meaningful source graphics may use support_box. These are inches from the TOP LEFT; the title/details boxes are INSIDE the right burgundy panel. No whole-slide thumbnail. Interior content-box/footer rules do NOT apply to this cover.'}
     return {'layout':slide.slide_layout.name, 'slide_kind':'content', 'content_box':CONTENT,
             'protected_footer':(0,6.65,13.333333, .85),
             'rule':'Every editable element, including source footers/logos, must stay inside content_box. The inherited bottom-left Stevens logo and footer band must remain uncovered.'}
@@ -121,6 +129,7 @@ def background_region(slide):
 
 
 def needs_source_background(source_slide,destination_slide,height,removed=(),decision=None):
+    if is_cover(destination_slide): return False
     if not (is_cover(destination_slide) or is_section(destination_slide)): return True
     from . import inventory
     extracted=cover_roles(source_slide,height,decision,regions(destination_slide)[:2])
@@ -141,6 +150,10 @@ def check(candidate):
                 'severity':'blocking','output_slide':0,'object_ids':[],
                 'message':'Recompose the first output page with the approved 1_Title Slide layout before reviewing or releasing it.'})
         if i == 0 and is_cover(slide) and not is_preserved(slide):
+            if any(s.name==BACKGROUND_NAME for s in slide.shapes):
+                findings.append({'code':'COVER_SOURCE_PANEL','criterion':'spatial_layout',
+                    'severity':'blocking','output_slide':0,'object_ids':[BACKGROUND_NAME],
+                    'message':'Remove the obsolete source background panel from the cover photo; place source text in the right-hand template regions.'})
             titles=[s for s in slide.shapes if s.has_text_frame and s.text.strip()
                     and (s.name.endswith('|title') or s.name=='authored-title')]
             if not titles:
@@ -165,6 +178,11 @@ def check(candidate):
                 findings.append({'code':'COVER_TITLE_POSITION','criterion':'spatial_layout',
                     'severity':'blocking','output_slide':i,'object_ids':[ident],
                     'message':'Place the extracted cover title in the first-page template title box.'})
+            if is_cover(slide) and shape.has_text_frame and shape.text.strip() and not ident.endswith(('|logo','|code')) and not parent:
+                if not any(contains(box,r) for r in (COVER_TITLE,COVER_DETAILS)):
+                    findings.append({'code':'COVER_TEXT_POSITION','criterion':'spatial_layout',
+                        'severity':'blocking','output_slide':i,'object_ids':[ident],
+                        'message':'Keep cover notes, footers and metadata in the right-hand text regions, not over the template photograph.'})
     return {'status':'failed' if findings else 'passed','findings':findings}
 
 
@@ -174,8 +192,26 @@ def cover_roles(slide, height, decision=None, text_regions=(COVER_TITLE,COVER_DE
     Ordinary text boxes can be titles. Never require a PowerPoint title placeholder.
     Keep uncertain graphics intact rather than deleting presumed decoration.
     """
+    cover=text_regions==(COVER_TITLE,COVER_DETAILS)
+    def flow_details(elements,roles):
+        x,y,w,h=text_regions[1];gap=.025
+        ordered=sorted(elements,key=lambda s:((s.top or 0),(s.left or 0)))
+        result={}
+        for font in range(18,10,-1):
+            capacity=max(1,int(w*72/(font*.55)))
+            lines=[sum(max(1,math.ceil(len(line)/capacity)) for line in s.text.splitlines()) for s in ordered]
+            heights=[count*font*1.22/72+.015 for count in lines]
+            if sum(heights)+gap*max(0,len(ordered)-1)<=h:break
+        total=sum(heights) or 1
+        factor=min(1,(h-gap*max(0,len(ordered)-1))/total)
+        for s,size in zip(ordered,heights):
+            size*=factor
+            result[s.shape_id]={'role':roles.get(s.shape_id,'supporting_text'),'font_size':font,
+                'box':(x,y,w,size),'basis':'cover text flow with measured line allowance'}
+            y+=size+gap
+        return result
     text = [s for s in slide.shapes if s.has_text_frame and s.text.strip()
-            and (s.top or 0) < height*.9]
+            and (cover or (s.top or 0) < height*.9)]
     if not text: return {}
     if decision:
         # Use the pre-composition semantic decision. Never promote a logo/statistic
@@ -184,9 +220,12 @@ def cover_roles(slide, height, decision=None, text_regions=(COVER_TITLE,COVER_DE
                if e['id'].rsplit('/',2)[-2]=='slide'}
         titles=[s for s in text if roles.get(s.shape_id)=='title']
         if not titles: raise ValueError('Cover extraction requires a semantically identified native title.')
-        details=[s for s in text if roles.get(s.shape_id) in ('subtitle','author','body')]
+        details=[s for s in text if (roles.get(s.shape_id) in ('subtitle','author','body')
+                 or (cover and roles.get(s.shape_id) in ('footer','caption','unknown')))]
         result={}
         for elements,region,role in ((titles,text_regions[0],'title'),(details,text_regions[1],'supporting_text')):
+            if cover and role=='supporting_text':
+                result.update(flow_details(elements,roles));continue
             x,y,w,h=region
             ordered=sorted(elements,key=lambda s:((s.top or 0),(s.left or 0)))
             weights=[max(1,len(s.text.splitlines())) for s in ordered];total=sum(weights) or 1
@@ -205,6 +244,8 @@ def cover_roles(slide, height, decision=None, text_regions=(COVER_TITLE,COVER_DE
     if title is None: title=max(text,key=rank)
     result={title.shape_id:{'role':'title','box':text_regions[0],'basis':'native title or largest source text'}}
     details=sorted([s for s in text if s is not title],key=lambda s:((s.top or 0),(s.left or 0)))
+    if cover:
+        result.update(flow_details(details,{}));return result
     x,y,w,h=text_regions[1]
     weights=[max(1,len(s.text.splitlines())) for s in details]
     total=sum(weights) or 1

@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT / 'backend'))
 os.environ['STEVENS_LEARN'] = '0'
 os.environ['STEVENS_OFFLINE'] = '1'
 os.environ['STEVENS_AUTH_DB'] = str(Path(tempfile.mkdtemp(prefix='stevens-tests-')) / 'accounts.sqlite3')
+os.environ['STEVENS_WORKSPACE_ROOT'] = tempfile.mkdtemp(prefix='stevens-test-jobs-')
 
 
 @pytest.fixture(autouse=True)
