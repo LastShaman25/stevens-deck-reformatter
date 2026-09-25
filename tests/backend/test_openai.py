@@ -37,6 +37,22 @@ def test_openai_default_and_no_silent_provider_fallback(openai_config,monkeypatc
     assert providers.generate('planner','JSON',{})['status']=='not_configured'
 
 
+def test_review_reasoning_is_separate_without_changing_model(openai_config,monkeypatch):
+    seen=[]
+    monkeypatch.delenv('OPENAI_REVIEW_REASONING_EFFORT',raising=False)
+    monkeypatch.setenv('OPENAI_REASONING_EFFORT','none')
+    def post(url,**kwargs):
+        seen.append(kwargs['json']);return reply(completed({'ok':True}))
+    monkeypatch.setattr(providers.requests,'post',post)
+    for role in ('planner','reviewer','output_qa'):providers.generate(role,'JSON',{})
+    assert [r['reasoning']['effort'] for r in seen]==['none','low','low']
+    assert all(r['model']=='gpt-6-luna' for r in seen)
+    monkeypatch.setenv('OPENAI_REASONING_EFFORT','medium')
+    assert providers.reasoning_effort('reviewer')=='medium'
+    monkeypatch.setenv('OPENAI_REVIEW_REASONING_EFFORT','none')
+    assert providers.reasoning_effort('reviewer')=='none'
+
+
 @pytest.mark.parametrize('schema',[layout.LayoutPlan.model_json_schema(),pipeline.VisualReview.model_json_schema()])
 def test_responses_request_schema_images_and_usage(openai_config,monkeypatch,tmp_path,schema):
     original=deepcopy(schema);captured={}
@@ -92,11 +108,12 @@ def test_openai_http_failure_redaction(openai_config,monkeypatch,code,status):
 
 
 def test_optional_visual_check_uses_openai(openai_config,monkeypatch,tmp_path):
+    from rubric_fixtures import passed_checks
     path=tmp_path/'test.png';Image.new('RGB',(100,60),'white').save(path)
     seen=[]
     def post(url,**kw):
         seen.append(kw['json']['model'])
-        return reply(completed({'verdict':'passed','summary':'Readable synthetic image','findings':[]}))
+        return reply(completed({'verdict':'passed','summary':'Readable synthetic image','findings':[],'rubric':passed_checks()}))
     monkeypatch.setattr(providers.requests,'post',post)
     result=optional_review.review_slide_result(str(path))
     assert result['status']=='completed' and result['provider']=='openai' and result['findings']==[]
@@ -104,6 +121,7 @@ def test_optional_visual_check_uses_openai(openai_config,monkeypatch,tmp_path):
 
 
 def test_generation_through_actual_openai_adapter(ai_session,monkeypatch):
+    from rubric_fixtures import role_map, passed_checks, source_choice
     # The HTTP boundary is mocked; the adapter, schema and pipeline are real.
     monkeypatch.setenv('OPENAI_API_KEY','sk-test-not-real')
     monkeypatch.setenv('STEVENS_AI_PLANNER','openai');monkeypatch.setenv('STEVENS_AI_REVIEWER','openai')
@@ -114,8 +132,9 @@ def test_generation_through_actual_openai_adapter(ai_session,monkeypatch):
     def post(url,**kw):
         assert url=='https://api.openai.com/v1/responses'
         request=kw['json'];payload=json.loads(request['input'][0]['content'][0]['text'])
-        value=identity_plan(payload['objects']) if 'objects' in payload else {'verdict':'passed','summary':'Synthetic review','findings':[]}
-        if 'objects' in payload:
+        value=role_map(payload['objects']) if payload.get('stage') in ('identify_elements','source_decisions') else identity_plan(payload['objects']) if 'objects' in payload else {'verdict':'passed','summary':'Synthetic review','findings':[],'rubric':passed_checks()}
+        if payload.get('stage')=='source_decisions':value=source_choice(payload)
+        if 'objects' in value:
             for obj in value['objects']:obj.update(role='keep',font_size=None,color='keep')
         return reply(completed(value))
     monkeypatch.setattr(providers.requests,'post',post)
@@ -123,7 +142,7 @@ def test_generation_through_actual_openai_adapter(ai_session,monkeypatch):
     assert r['checks']['ai_redesign']['status']=='passed',r['findings']
     assert r['checks']['ai_visual_review']['status']=='passed'
     assert all(c['provider']=='openai' and c['model']=='gpt-6-luna' for c in r['ai_pipeline']['calls'])
-    assert len(r['ai_pipeline']['calls'])==6
+    assert len(r['ai_pipeline']['calls'])==12
 
 
 ORIGINAL_GENERATE=providers.generate

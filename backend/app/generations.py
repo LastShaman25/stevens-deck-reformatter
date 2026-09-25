@@ -12,13 +12,24 @@ from slide_engine.preserve import CoverageError
 from . import grounded
 from .qa import artifact_coverage, brand_lint, render_verify
 
-POLICY_VERSION = 'owned-authoring-ordered-qa-4'
+POLICY_VERSION = 'mandatory-qa-pass-14'
 REQUIRED = ('plan_coverage', 'artifact_coverage', 'structural_formatting', 'render_verification')
+QA_REQUIRED = ('ai_visual_review', 'output_qa_coverage', 'output_qa_sequence',
+               'output_qa_accuracy', 'output_qa_visual')
+
+
+def qa_passed(record):
+    return all(record.get('checks', {}).get(n, {}).get('status') == 'passed'
+               for n in QA_REQUIRED if n in required_checks(record))
+
+
+def can_approve(record, finding):
+    return qa_passed(record) and finding.get('severity') == 'review' and finding.get('check') not in QA_REQUIRED
 
 
 class GenerateRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    mode: Literal['preserve','ai'] = 'preserve'
+    mode: Literal['ai'] = 'ai'
     repair_passes: int = Field(default=1,ge=0,le=2)
 
 
@@ -37,10 +48,22 @@ class Decision(BaseModel):
     rationale: str = Field(min_length=1, max_length=2000)
 
 
-def settle(record):
+def required_checks(record):
     from .ai.output_qa import CHECKS
     required=REQUIRED + CHECKS + ('output_qa_visual',) + (('ai_redesign','ai_visual_review') if record.get('mode')=='ai' else ())
     if record.get('mode') == 'author': required += ('content_grounding',)
+    if record.get('pdf_import'): required += ('pdf_import',)
+    return required
+
+
+def download_allowed(record):
+    return bool(record and record.get('state')=='ready' and qa_passed(record) and all(
+        record.get('checks',{}).get(name,{}).get('status') in ('passed','needs_review')
+        for name in required_checks(record)))
+
+
+def settle(record):
+    required=required_checks(record)
     states = [record['checks'].get(k, {}).get('status', 'not_run') for k in required]
     if any(s == 'failed' for s in states):
         record['state'] = 'failed'
@@ -52,15 +75,23 @@ def settle(record):
         if any(f.get('severity') == 'blocking' for f in pending):
             record['state'] = 'failed'
         else:
-            record['state'] = 'needs_review' if pending else 'ready'
+            record['state'] = 'needs_review' if pending or not qa_passed(record) else 'ready'
     return record
 
 
 def save(record):
+    render=record.get('checks',{}).get('render_verification',{})
+    pages=render.get('pages',[])
+    if pages and render.get('candidate_sha256')==record.get('candidate_sha256'):
+        pdf=Path(pages[0]['png']).parent/'candidate.pdf'
+        if pdf.is_file() and sha256(pdf)==render.get('pdf_sha256'):
+            record['pdf_export']={'path':str(pdf),'sha256':render['pdf_sha256'],'candidate_sha256':record['candidate_sha256']}
     Path(record['directory'], 'generation.json').write_text(json.dumps(record, indent=2), encoding='utf-8')
 
 
 def add_check(record, name, result):
+    # Reverification replaces findings; stale failures must not survive a repair.
+    record['findings']=[f for f in record['findings'] if f.get('check')!=name]
     record['checks'][name] = result
     for i, item in enumerate(result.get('findings', [])):
         finding = dict(item)
@@ -87,6 +118,12 @@ def build(sess, mode='preserve', repair_passes=1):
     sess.generated = False
     sess.generation_mode = mode
     try:
+        if getattr(sess,'pdf_import',None):
+            receipt=sess.pdf_import
+            if sha256(sess.source_pdf)!=receipt['source_pdf_sha256'] or sha256(sess.source_path)!=receipt['source_pptx_sha256']:
+                raise ValueError('PDF import changed; upload the original PDF again.')
+            record['pdf_import']=receipt
+            add_check(record,'pdf_import',{'status':'passed','findings':[]})
         report = grounded.build_deck(sess.source_path, str(candidate), revisions=sess.revisions)
         ai_checks={}
         if mode=='ai':
@@ -126,13 +163,24 @@ def build(sess, mode='preserve', repair_passes=1):
                     'notes':slide.notes_slide.notes_text_frame.text if slide.has_notes_slide else ''}
                     for i, slide in enumerate(__import__('pptx').Presentation(sess.source_path).slides)],
                     'source_to_output_slides':record['source_to_output_slides']}
-        for name, result in output_qa.run(sess, record, evidence).items(): add_check(record, name, result)
+        redesign_completed=mode!='ai' or ai_checks.get('ai_redesign',{}).get('status') in ('passed','needs_review')
+        if redesign_completed:
+            for name, result in output_qa.run(sess, record, evidence).items(): add_check(record, name, result)
+        else:
+            for name in output_qa.CHECKS+('output_qa_visual',):
+                add_check(record,name,{'status':'not_run','findings':[],'reason':'Redesign did not complete. Resolve the AI error before output QA.'})
+        if mode=='ai' and redesign_completed:
+            # The request's legacy repair_passes controls the initial planner only.
+            # Mandatory QA repair cannot be disabled or waived by that setting.
+            repair_from_output_qa(sess,record,evidence,None,progress)
+            sess.output_path=record['candidate']; sess.build_report=record['report']
     except CoverageError as exc:
         add_check(record, 'plan_coverage', exc.report)
     except Exception as exc:
         add_check(record, 'plan_coverage', {'status': 'error', 'findings': [{'code': 'BUILD_ERROR',
             'severity': 'blocking', 'message': f'Build failed: {type(exc).__name__}: {exc}'}]})
     settle(record)
+    record['usage']={'upload_requests':sess.calls,'upload_tokens':sess.tokens}
     record['progress']={'stage':'finished'}
     sess.generated = record['state'] == 'ready'
     save(record)
@@ -140,12 +188,125 @@ def build(sess, mode='preserve', repair_passes=1):
 
 
 def structural(candidate):
-    result = brand_lint.lint(candidate)
-    findings = [{'code': f['type'].upper(), 'message': f['note'], 'output_slide': s['index'],
-                 'severity': 'blocking' if f['sev'] == 'fail' else 'review'}
-                for s in result['slides'] for f in s['issues']]
-    return {'status': 'failed' if result['total_fail'] else 'needs_review' if findings else 'passed',
-            'findings': findings, 'details': result}
+    from .ai.pipeline import structural as verified_structure
+    return verified_structure(candidate)
+
+
+def repair_fingerprint(path):
+    """Ignore ZIP timestamps and subpixel coordinate roundoff, not actual edits."""
+    from zipfile import ZipFile
+    from lxml import etree
+    digest=hashlib.sha256()
+    with ZipFile(path) as archive:
+        for name in sorted(archive.namelist()):
+            if name=='docProps/core.xml': continue
+            data=archive.read(name)
+            if name.startswith('ppt/') and name.endswith('.xml'):
+                root=etree.fromstring(data,parser=etree.XMLParser(resolve_entities=False,no_network=True))
+                # Planner inches round to six decimals; one EMU is not a repair.
+                for node in root.iter():
+                    if not isinstance(node.tag,str): continue
+                    if etree.QName(node).localname in ('off','ext','chOff','chExt'):
+                        for key in ('x','y','cx','cy'):
+                            if key in node.attrib: node.set(key,str(round(int(node.get(key))/1000)))
+                data=etree.tostring(root,method='c14n')
+            digest.update(name.encode());digest.update(data)
+    return digest.hexdigest()
+
+
+def repair_from_output_qa(sess,record,evidence,limit,progress):
+    """Final QA -> affected slides only -> native edits -> ALL gates and ordered QA.
+
+    Retain the previous candidate unless QA improves without technical regression.
+    Failed/incomplete repairs remain recorded and can never authorize a download.
+    """
+    from copy import deepcopy
+    import shutil
+    from .ai import pipeline, output_qa
+    names=QA_REQUIRED
+    def structural_blockers(checks):
+        return [f for f in checks.get('structural_formatting',{}).get('findings',[]) if f.get('severity')=='blocking']
+    def qa_score(checks):
+        fs=[f for n in names for f in checks.get(n,{}).get('findings',[])]+structural_blockers(checks)
+        return (sum(checks.get(n,{}).get('status') in ('error','not_run') for n in names),
+                sum(f.get('severity')=='blocking' for f in fs),len(fs),
+                sum(checks.get(n,{}).get('status')!='passed' for n in names))
+    calls_used=len((record.get('ai_pipeline') or {}).get('calls',[]))
+    attempt=-1
+    while limit is None or attempt+1 < limit:
+        attempt+=1
+        if qa_passed(record) and not structural_blockers(record['checks']): break
+        if any(record['checks'].get(n,{}).get('status') in ('error','not_run',None) for n in names):
+            record['repair_stop_reason']='Mandatory QA could not complete. Output remains blocked.'
+            break
+        feedback=[]
+        for name in names:
+            for finding in record['checks'][name].get('findings',[]):
+                affected=finding.get('affected_slides',[finding['output_slide']] if 'output_slide' in finding else [])
+                feedback.extend({**finding,'output_slide':i,'from_check':name} for i in sorted(set(affected)))
+        feedback.extend({**f,'from_check':'structural_formatting'} for f in structural_blockers(record['checks']) if 'output_slide' in f)
+        if not feedback:
+            record['repair_stop_reason']='QA did not pass and supplied no slide-specific repair evidence. Output remains blocked.'
+            break
+        sess.ensure_active()
+        progress(stage='repairing_output_qa',attempt=attempt+1,affected_slides=sorted({f['output_slide'] for f in feedback}))
+        work=Path(record['directory'])/f'output-qa-repair-{attempt+1}'; work.mkdir()
+        candidate=work/'candidate.pptx'; shutil.copyfile(record['candidate'],candidate)
+        history={'attempt':attempt+1,'incoming_findings':deepcopy(feedback),
+                 'targets':sorted({f['output_slide'] for f in feedback}),
+                 'before_sha256':record['candidate_sha256'],'accepted':False}
+        record.setdefault('output_qa_repairs',[]).append(history)
+        report,checks,details=pipeline.execute(sess,candidate,record['report'],work/'pipeline',
+            repair_passes=0,progress=progress,initial_feedback=feedback,calls_used=calls_used)
+        calls_used+=len(details['calls']); history['ai_pipeline']=details
+        # Preserve total usage and the original attempt ledger for the UI.
+        record['ai_pipeline']['calls'].extend(details['calls'])
+        record['ai_pipeline']['completed_calls']=calls_used
+        history['candidate_sha256']=sha256(candidate)
+        if checks.get('ai_redesign',{}).get('status')!='passed' or checks.get('ai_visual_review',{}).get('status')=='error':
+            history['reason']='Redesigner or per-slide review did not complete; previous candidate retained.'
+            record['repair_stop_reason']=history['reason']+' Output remains blocked.'
+            break
+        proposal=deepcopy(record)
+        proposal.update(candidate=str(candidate),candidate_sha256=sha256(candidate),report=report,human_decisions=[])
+        proposal['repair_acceptance_checks']=deepcopy(feedback)
+        for name,result in checks.items(): add_check(proposal,name,result)
+        # Always inspect every final screenshot in order after the targeted edit.
+        for name,result in output_qa.run(sess,proposal,evidence).items(): add_check(proposal,name,result)
+        history['checks']=deepcopy(proposal['checks'])
+        history['output_qa']=proposal.get('output_qa')
+        before=qa_score(record['checks']); after=qa_score(proposal['checks'])
+        technical=lambda r:sum(c['status']=='error' for n,c in r['checks'].items() if n not in names)+sum(
+            f.get('severity')=='blocking' for f in r['findings'] if f['check'] not in names)
+        def blocker_scopes(value):
+            return {(f.get('criterion',f.get('code')),slide) for f in value['findings'] if f.get('severity')=='blocking'
+                    for slide in f.get('affected_slides',[f.get('output_slide')])}
+        changed=repair_fingerprint(candidate)!=repair_fingerprint(record['candidate'])
+        accept=(changed and after[0]==0 and after<before and technical(proposal)<=technical(record)
+                and blocker_scopes(proposal)<=blocker_scopes(record))
+        history.update(accepted=accept,before_score=before,after_score=after)
+        if not accept:
+            history['reason']=('The proposed repair made no substantive change; previous candidate retained.' if not changed
+                               else 'Final QA did not improve without regression; previous candidate retained.')
+            record['repair_stop_reason']=history['reason']+' Output remains blocked.'
+            break
+        # Promote the exact verified bytes, and preserve stable preview URLs.
+        shutil.copyfile(candidate,record['candidate'])
+        render=Path(record['directory'])/'render'
+        shutil.copytree(work/'pipeline'/'render',render,dirs_exist_ok=True)
+        for page in proposal['checks']['render_verification'].get('pages',[]):
+            page['png']=str(render/f"slide-{page['output_slide']}.png")
+        for item in proposal.get('output_manifest',[]): item['image']=str(render/f"slide-{item['ordinal']-1}.png")
+        if proposal.get('output_manifest'):
+            proposal['output_manifest_sha256']=hashlib.sha256(json.dumps(proposal['output_manifest'],sort_keys=True).encode()).hexdigest()
+        for key in ('candidate_sha256','report','checks','findings','human_decisions','output_manifest','output_manifest_sha256','output_qa'):
+            if key in proposal: record[key]=proposal[key]
+        record['ai_pipeline']['changed_objects']+=details.get('changed_objects',0)
+        record['ai_pipeline']['candidate_sha256']=record['candidate_sha256']
+        record['ai_pipeline']['status']=details['status']
+        record['ai_pipeline']['final_reviews']=details.get('final_reviews',[])
+        record['ai_pipeline']['element_roles'].extend(details.get('element_roles',[]))
+        save(record)
 
 
 def verify_identity(sess, record, ready=True):
@@ -158,6 +319,8 @@ def verify_identity(sess, record, ready=True):
         raise ValueError('STALE_POLICY_OR_TEMPLATE')
     if record['source_sha256'] != sha256(sess.source_path):
         raise ValueError('SOURCE_CHANGED')
+    if record.get('pdf_import') and sha256(sess.source_pdf)!=record['pdf_import']['source_pdf_sha256']:
+        raise ValueError('SOURCE_PDF_CHANGED')
     if not Path(record['candidate']).is_file() or sha256(record['candidate']) != record['candidate_sha256']:
         raise ValueError('ARTIFACT_CHANGED')
     if record.get('mode') == 'author':
@@ -165,12 +328,15 @@ def verify_identity(sess, record, ready=True):
         if record.get('outline_hash') != sess.creation['approved_hash'] or record.get('content_hash') != hash_json(sess.creation['deck']):
             raise ValueError('AUTHORED_CONTENT_CHANGED')
     if ready:
-        from .ai.output_qa import CHECKS
-        if any(record['checks'].get(name, {}).get('status') not in ('passed','needs_review') for name in CHECKS):
+        settle(record)
+        if not download_allowed(record):
             raise ValueError('OUTPUT_QA_INCOMPLETE')
         for item in record.get('output_manifest', []):
             if not Path(item['image']).is_file() or sha256(item['image']) != item['sha256']:
                 raise ValueError('RENDERED_ARTIFACT_CHANGED')
+            original=item.get('original')
+            if original and (not Path(original['image']).is_file() or sha256(original['image'])!=original['sha256']):
+                raise ValueError('ORIGINAL_RENDER_CHANGED')
 
 
 def decide(sess, decision):
@@ -178,7 +344,7 @@ def decide(sess, decision):
     verify_identity(sess, record, ready=False)
     if record['generation_id'] != decision.generation_id or record['candidate_sha256'] != decision.candidate_sha256:
         raise ValueError('STALE_DECISION')
-    reviewable = {f['id'] for f in record['findings'] if f['severity'] == 'review'}
+    reviewable = {f['id'] for f in record['findings'] if can_approve(record,f)}
     if not decision.finding_ids or not set(decision.finding_ids) <= reviewable:
         raise ValueError('FINDING_CANNOT_BE_APPROVED')
     record['human_decisions'].append({**decision.model_dump(), 'decided_at': datetime.now(timezone.utc).isoformat()})
@@ -196,12 +362,22 @@ def public(record):
     value = {k: record[k] for k in keys}
     value['mode']=record.get('mode','preserve')
     value['progress']=record.get('progress',{})
+    value['usage']=record.get('usage',{})
+    value['pdf_available']=bool(record.get('pdf_export'))
+    value['download_allowed']=download_allowed(record)
     ai=record.get('ai_pipeline')
     value['ai_pipeline']={k:v for k,v in ai.items() if k not in ('attempts','final_reviews')} if ai else None
     if ai:
         value['ai_pipeline']['attempts']=[{k:v for k,v in a.items() if k not in ('plans','reviews')} for a in ai['attempts']]
     value['checks'] = {k: {'status': v['status']} for k,v in record['checks'].items()}
-    value['findings'] = [{k:v for k,v in f.items() if k not in ('expected','actual','evidence')} for f in record['findings']]
+    value['findings'] = [{**{k:v for k,v in f.items() if k not in ('expected','actual','evidence')},
+                          'can_approve':can_approve(record,f)} for f in record['findings']]
+    value['repair_stop_reason']=record.get('repair_stop_reason')
     value['corrections'] = (record.get('report') or {}).get('corrections', [])
     value['built_slides'] = (record.get('report') or {}).get('slide_count', 0)
+    value['source_decisions']={key:{'action':choice['action'],'reason':choice['reason'],
+        'removed_artwork':len(choice.get('remove_ids',[])),
+        'extracted_logos':len(choice.get('logo_extractions',[]))} for key,choice in (record.get('report') or {}).get('source_decisions',{}).items()}
+    value['output_qa_repairs']=[{k:v for k,v in attempt.items() if k in ('attempt','targets','accepted','reason','before_score','after_score')}
+                                for attempt in record.get('output_qa_repairs',[])]
     return value

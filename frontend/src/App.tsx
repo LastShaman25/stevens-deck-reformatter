@@ -27,35 +27,31 @@ function Preview({url, label}: {url: string | null; label: string}) {
 export default function App({onHome}: {onHome?:()=>void} = {}) {
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [generation, setGeneration] = useState<Generation | null>(null);
+  const [previewGeneration, setPreviewGeneration] = useState<Generation | null>(null);
   const [current, setCurrent] = useState(0);
   const [output, setOutput] = useState(0);
   const [revs, setRevs] = useState<Record<number, Revision>>({});
-  const [selectedAi, setSelectedAi] = useState<number[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState('');
   const [saved, setSaved] = useState(false);
-  const [mode,setMode] = useState<'preserve'|'ai'>('preserve');
   const [aiConfig,setAiConfig] = useState<AIConfiguration>();
   const [connection,setConnection] = useState<Record<string,{status:string; message?:string}>>();
   const [generating,setGenerating] = useState(false);
-  const modeChosen = useRef(false);
   const generationPending = useRef(false);
   const scope = useRef(0);
   const dirty = useRef(new Set<number>());
 
   function restore(info: SessionInfo) {
     setSession(info); setGeneration(info.generation ?? null); setRevs(info.revisions ?? {});
-    setSelectedAi(info.ai_check ?? []); setCurrent(0); setOutput(0); setSaved(!!info.benchmarked);
+    setPreviewGeneration(info.generation?.state !== 'checking' && info.generation?.candidate_sha256 ? info.generation : info.preview_generation ?? null);
+    setCurrent(0); setOutput(0); setSaved(!!info.benchmarked);
     setAiConfig(info.capabilities.ai);
-    setMode(info.generation?.mode ?? (info.capabilities.ai?.configured ? 'ai' : 'preserve'));
-    modeChosen.current=true;
     dirty.current.clear();
   }
   useEffect(() => {
     request<{capabilities:{ai?:AIConfiguration}}>('/health').then(h=>{
       setAiConfig(h.capabilities.ai);
-      if (!modeChosen.current) setMode(h.capabilities.ai?.configured ? 'ai' : 'preserve');
     }).catch(()=>{});
     const sid = new URLSearchParams(window.location.search).get('session');
     if (!sid) return;
@@ -114,10 +110,11 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
     generationPending.current=true;setGenerating(true);setGeneration(null);
     await operation(async () => {
       await saveRevisions(sid);
-      const res = await request<{generation: Generation}>(`/sessions/${sid}/generate`, {mode,repair_passes:1});
+      const res = await request<{generation: Generation}>(`/sessions/${sid}/generate`, {mode:'ai',repair_passes:1});
       if (token !== scope.current) return;
       generationPending.current=false;
       setGeneration(res.generation); setSaved(false);
+      if (res.generation.candidate_sha256) setPreviewGeneration(res.generation);
       setOutput(res.generation.source_to_output_slides[String(current)]?.[0] ?? 0);
     });
     generationPending.current=false;setGenerating(false);
@@ -146,17 +143,6 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
       if (token === scope.current) setNotice('Revision saved. Generate to apply and verify the result.');
     });
   }
-  async function toggleAi() {
-    if (!session) return;
-    const token = scope.current;
-    const enabled = !selectedAi.includes(current);
-    await operation(async () => {
-      const res = await request<{generation: Generation | null}>(`/sessions/${session.session_id}/slides/${current}/ai-check`, {enabled});
-      if (token !== scope.current) return;
-      setSelectedAi(a => enabled ? [...a, current] : a.filter(i => i !== current));
-      setGeneration(res.generation);
-    });
-  }
   async function approve(ids: string[], rationale: string) {
     if (!session || !generation) return false;
     const token = scope.current;
@@ -170,14 +156,14 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
     });
     return approved;
   }
-  async function download(draft: boolean) {
+  async function download(draft: boolean, format: 'pptx' | 'pdf' = 'pptx') {
     if (!session || !generation) return;
     await operation(async () => {
-      const res = await apiFetch(`/api/sessions/${session.session_id}/download?generation_id=${generation.generation_id}&draft=${draft}`);
+      const res = await apiFetch(`/api/sessions/${session.session_id}/download?generation_id=${generation.generation_id}&draft=${draft}&format=${format}`);
       if (!res.ok) {const err = await res.json(); throw new Error(err.detail);}
       const url = URL.createObjectURL(await res.blob());
       const a = document.createElement('a'); a.href = url;
-      a.download = draft ? 'Stevens-unverified-draft.pptx' : 'Stevens-verified.pptx'; a.click();
+      a.download = (draft ? 'Stevens-unverified-draft.' : 'Stevens-verified.') + format; a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       if (!draft) {await request(`/sessions/${session.session_id}/finalize`, {}); await startOver(); onHome?.();}
     });
@@ -185,9 +171,10 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
   async function startOver() {
     const old = session;
     ++scope.current;
-    setSession(null); setGeneration(null); setRevs({}); setSelectedAi([]); setError(undefined);
+    setSession(null); setGeneration(null); setRevs({}); setError(undefined);
+    setPreviewGeneration(null);
     setNotice(''); setSaved(false); setBusy(false); setCurrent(0); setOutput(0); dirty.current.clear();
-    generationPending.current=false;setGenerating(false);setMode(aiConfig?.configured?'ai':'preserve');modeChosen.current=false;
+    generationPending.current=false;setGenerating(false);
     window.history.replaceState({}, '', window.location.pathname);
     if (old) {
       try { const response=await apiFetch(`/api/sessions/${old.session_id}`, {method:'DELETE'});
@@ -199,11 +186,12 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
   function navigateSlide(index: number) {
     if (busy || !session || index < 0 || index >= session.slide_count) return;
     setCurrent(index);
-    setOutput(generation?.source_to_output_slides[String(index)]?.[0] ?? 0);
+    setOutput(previewGeneration?.source_to_output_slides[String(index)]?.[0] ?? 0);
   }
   const rev = revs[current] ?? empty;
   const resolved = new Set(generation?.human_decisions.flatMap(d => d.finding_ids) ?? []);
-  const outputs = generation?.source_to_output_slides[String(current)] ?? [];
+  const outputs = previewGeneration?.source_to_output_slides[String(current)] ?? [];
+  const previewIsPrevious = !!previewGeneration && (generating || !generation || generation.generation_id !== previewGeneration.generation_id);
   const pageFindings = generation?.findings.filter(f => f.affected_slides?.length ? f.affected_slides.includes(output) : f.output_slide != null
     ? outputs.includes(output) && f.output_slide === output : findingSource(f) === current) ?? [];
   const deckFindings = generation?.findings.filter(f => f.output_slide == null && !f.affected_slides?.length && findingSource(f) == null) ?? [];
@@ -220,7 +208,7 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
         <button className="btn-ghost" disabled={busy || !aiConfig?.configured} onClick={()=>refreshAI(true)}>Test AI connection</button></div>
       <p className="mt-2">Planner: {aiConfig?.planner.model || 'not configured'} · Reviewer: {aiConfig?.reviewer.model || 'not configured'}</p>
       {!aiConfig?.configured ? <p className="mt-1 text-stevens-gray">{aiConfig?.planner.provider==='openai' && aiConfig?.reviewer.provider==='openai' ? 'Add OPENAI_API_KEY to backend/.env locally, then refresh.' : 'Configure the provider keys in backend/.env locally, then refresh.'} Never paste keys into reviewer notes.</p> :
-        <p className="mt-1 text-stevens-gray">{aiConfig.independent_providers ? 'Separate providers plan and review.' : 'One provider performs separate planning and review calls.'} AI mode sends slide content and rendered images to these providers. API usage may incur charges.</p>}
+        <p className="mt-1 text-stevens-gray">{aiConfig.independent_providers ? 'Separate providers plan and review.' : 'One provider performs separate planning and review calls.'} Redesign sends slide content and rendered images to these providers. API usage may incur charges.</p>}
       {connection && Object.entries(connection).map(([role,result])=><p role="status" key={role}>{role}: {result.status}{result.message ? ` — ${result.message}` : ''}</p>)}
     </section>
     {error && <div role="alert" className="m-5 rounded border border-stevens-red bg-red-50 p-4 text-stevens-red">{error}</div>}
@@ -228,10 +216,7 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
     {!session ? <UploadStep onFile={upload} busy={busy} /> : <main className="mx-auto max-w-7xl p-5">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-bold">{session.name}</h2>
         <p className="text-sm text-stevens-gray">{session.slide_count} source slides{generation ? ` → ${generation.built_slides} output slides` : ''}</p></div>
-        <div className="flex flex-wrap items-center gap-3"><label>Generation mode <select aria-label="Generation mode" value={mode} disabled={busy} className="ml-2 rounded border p-2" onChange={e=>{
-          modeChosen.current=true;setMode(e.target.value as 'ai'|'preserve');setGeneration(null);setSaved(false);
-        }}><option value="ai">AI redesign + full check</option><option value="preserve">Preserve + full output QA</option></select></label>
-        <button className="btn-red" disabled={busy || (mode==='ai' && !aiConfig?.configured)} onClick={generate}>{busy ? 'Working…' : 'Generate and verify'}</button></div></div>
+        <button className="btn-red" disabled={busy || !aiConfig?.configured} onClick={generate}>{busy ? 'Working…' : 'Redesign + QA'}</button></div>
       <div className="grid gap-5 lg:grid-cols-[1fr_330px]">
         <section className="card p-5">
           <nav aria-label="Slide navigation" className="mb-4 flex flex-wrap items-center justify-between gap-2">
@@ -249,34 +234,38 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
             {outputs.map((o,i) => <option key={o} value={o}>{i+1}</option>)}</select></label>}
           <div className="mt-4 flex flex-col gap-4 md:flex-row">
             <Preview url={`/api/sessions/${sid}/slides/${current}/preview?variant=before`} label="Original source" />
-            <Preview url={generation && generation.state!=='checking' && !generating && outputs.length ? `/api/sessions/${sid}/slides/${output}/preview?variant=after&generation_id=${generation.generation_id}` : null} label="Generated candidate" />
+            <Preview url={previewGeneration && outputs.length ? `/api/sessions/${sid}/slides/${output}/preview?variant=after&generation_id=${previewGeneration.generation_id}` : null} label="Generated candidate" />
           </div>
+          {previewIsPrevious && <p role="status" className="mt-3 text-sm text-amber-800">Showing the previous candidate. Your latest instructions are not applied yet; generate again to update and verify it.</p>}
+          {!previewIsPrevious && previewGeneration && !previewGeneration.download_allowed && <p className="mt-3 text-sm text-amber-800">Unapproved preview. QA has not cleared this candidate; downloads remain blocked.</p>}
           <p className="mt-3 text-xs text-stevens-gray">Previews show real renders when available. Review decisions apply to a specific generated file.</p>
           <fieldset disabled={busy} className="mt-5"><legend className="text-sm font-bold">Corrections</legend>
             <div className="mt-2 flex flex-wrap gap-2">{[['split','Split slide'],['dense','Too dense'],['layout','Layout'],['overlap','Overlap'],['diagram','Preserve diagram'],['emphasis','Source emphasis']].map(([id,label]) =>
               <button key={id} aria-pressed={rev.tags.includes(id)} className={rev.tags.includes(id) ? 'btn-red' : 'btn-ghost'} onClick={() => changeRevision({...rev, tags:rev.tags.includes(id) ? rev.tags.filter(x => x !== id) : [...rev.tags,id], reset_emphasis: id === 'emphasis' ? true : rev.reset_emphasis})}>{label}</button>)}</div>
-            <label className="mt-4 block text-sm">{mode==='ai' ? 'Redesign instructions' : 'Reviewer note — does not automatically edit the slide'}
+            <label className="mt-4 block text-sm">Redesign instructions
               <textarea aria-label="Reviewer note" className="mt-1 w-full rounded border p-3" rows={3} value={rev.instruction} onChange={e => changeRevision({...rev,instruction:e.target.value})} /></label>
-            <p className="mt-1 text-xs text-stevens-gray">In AI mode, notes guide layout and styling. Original wording, chart data, notes, and links remain protected.</p>
+            <p className="mt-1 text-xs text-stevens-gray">Instructions guide layout and styling. Original wording, chart data, notes, and links remain protected.</p>
             <button className="btn-ghost mt-2" onClick={apply}>Save revision</button>
           </fieldset>
-          <label className="mt-4 flex items-center gap-2 text-sm"><input type="checkbox" checked={selectedAi.includes(current)} disabled={busy || mode==='ai'} onChange={toggleAi} />Optional AI visual check for this source slide</label>
-          {mode==='ai' && <p className="mt-1 text-xs">AI redesign already includes mandatory visual review of every output slide and one repair pass.</p>}
-          <p className="mt-1 text-xs text-stevens-gray">Selecting this check sends its rendered output to the configured provider. It cannot replace required verification.</p>
+          <p className="mt-4 text-xs text-stevens-gray">Redesign includes mandatory visual review of every output slide and one repair pass.</p>
           {generation?.corrections.filter(c => c.index === current).flatMap(c => c.actions).map((a,i) => <p className="mt-2 text-sm" key={i}>{a.action}: <b>{a.status}</b> — {a.message}</p>)}
         </section>
         <aside className="card p-5"><h2 className="text-lg font-bold">Verification</h2>
-          <p role="status" className="mt-2 font-semibold">{busy ? 'Processing…' : generation ? generation.state.replace('_',' ') : 'Not yet generated'}</p>
+          <p role="status" className="mt-2 font-semibold">{busy ? 'Processing…' : generation ? generation.state.replace('_',' ') : previewGeneration ? 'Regeneration required' : 'Not yet generated'}</p>
           {generating && generation?.progress && <p role="status" className="mt-2 text-sm">{generation.progress.stage.replace(/_/g,' ')}{generation.progress.output_slide!==undefined ? ` · output slide ${generation.progress.output_slide+1}` : ''}{generation.progress.completed_calls!==undefined ? ` · ${generation.progress.completed_calls} AI calls completed` : ''}</p>}
           {!generation && <p className="mt-2 text-sm text-stevens-gray">Generate a candidate to check content, formatting, and rendered output.</p>}
           {generation && <><ul className="mt-3 space-y-2 text-sm">{Object.entries(generation.checks).map(([name,result]) => <li key={name}><b>{name.replace(/_/g,' ')}</b>: {result.status.replace(/_/g,' ')}</li>)}</ul>
-            <div className="mt-4 flex flex-col gap-2"><button className="btn-red" disabled={busy || generation.state !== 'ready'} onClick={() => download(false)}>Download verified PowerPoint and finish</button>
-              <button className="btn-ghost" disabled={busy || !generation.candidate_sha256} onClick={() => download(true)}>Download unverified draft</button>
+            <div className="mt-4 flex flex-col gap-2"><button className="btn-red" disabled={busy || !generation.download_allowed} onClick={() => download(false)}>Download verified PowerPoint and finish</button>
+              <button className="btn-red" disabled={busy || !generation.download_allowed || !generation.pdf_available} onClick={() => download(false, 'pdf')}>Download verified PDF and finish</button>
               <button className="btn-ghost" onClick={async()=>{await startOver();onHome?.();}}>Finish and delete</button></div>
-            <p className="mt-2 text-xs text-stevens-gray">Download and finish ends editing and deletes processing files. Draft downloads expire after ten minutes.</p></>}
+            <p className="mt-2 text-xs text-stevens-gray">Every mandatory QA review must pass. Manual approval cannot override QA. Download and finish deletes processing files.</p></>}
           {generation?.ai_pipeline && <div className="mt-4 text-sm"><b>AI pipeline: {generation.ai_pipeline.status}</b>
-            <p>{generation.ai_pipeline.calls.length} calls · {generation.ai_pipeline.changed_objects} object edits</p>
+            {generation.source_decisions?.[String(current)] && <p className="mt-2">This slide: {generation.source_decisions[String(current)].action==='keep_original'?'kept unchanged':'redesigned'} · {generation.source_decisions[String(current)].removed_artwork} artwork elements removed. {!!generation.source_decisions[String(current)].extracted_logos && <>{generation.source_decisions[String(current)].extracted_logos} embedded logos preserved. </>}{generation.source_decisions[String(current)].reason}</p>}
+            <p>{generation.ai_pipeline.calls.length} pipeline steps · {generation.ai_pipeline.changed_objects} object edits</p>
+            {generation.usage && <p>Upload total: {generation.usage.upload_requests} requests · {generation.usage.upload_tokens.toLocaleString()} recorded tokens (includes retries and QA).</p>}
             {generation.ai_pipeline.attempts.map((a,i)=><p key={i}>Pass {a.attempt+1}: {a.accepted?'accepted':'rejected'}{a.reason?` — ${a.reason}`:''}</p>)}
+            {generation.output_qa_repairs?.map(a=><p key={`qa-${a.attempt}`}>Final QA repair {a.attempt} · slides {a.targets.map(i=>i+1).join(', ')}: {a.accepted?'accepted after recheck':'previous candidate retained'}{a.reason?` — ${a.reason}`:''}</p>)}
+            {generation.repair_stop_reason && <p className="text-stevens-red">{generation.repair_stop_reason}</p>}
             {generation.ai_pipeline.calls.filter(c=>c.status!=='completed').map((c,i)=><p className="text-stevens-red" key={i}>{c.role}: {c.status} — {c.message}</p>)}
           </div>}
           {generation && deckFindings.length > 0 && <details className="mt-5 border-t pt-4">

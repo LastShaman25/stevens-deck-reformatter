@@ -61,6 +61,47 @@ def resolve(run, paragraph, shape, key, fallback=False):
     return fallback
 
 
+def source_theme(shape):
+    part=shape.part;seen=set()
+    while part not in seen:
+        seen.add(part)
+        rels=list(part.rels.values())
+        theme=next((r for r in rels if r.reltype==RT.THEME),None)
+        if theme: return etree.fromstring(theme.target_part.blob)
+        parent=next((r for r in rels if r.reltype in (RT.SLIDE_LAYOUT,RT.SLIDE_MASTER)),None)
+        if not parent: break
+        part=parent.target_part
+    return None
+
+
+def font_family(run,paragraph,shape):
+    """Resolve Latin typeface before a source shape is attached to a new theme."""
+    nodes=[run._r.find(qn('a:rPr'))]
+    ppr=paragraph._p.find(qn('a:pPr'))
+    if ppr is not None: nodes.append(ppr.find(qn('a:defRPr')))
+    nodes+=inherited(shape,paragraph.level)
+    name=None
+    for node in nodes:
+        latin=node.find(qn('a:latin')) if node is not None else None
+        if latin is not None and latin.get('typeface'):
+            name=latin.get('typeface');break
+    if name and not name.startswith('+'): return name
+    ref=shape._element.find('.//'+qn('a:fontRef'))
+    major=(name or '').startswith('+mj') if name else ref is not None and ref.get('idx')=='major'
+    theme=source_theme(shape)
+    if theme is not None:
+        font=theme.find('.//'+qn('a:majorFont' if major else 'a:minorFont')+'/'+qn('a:latin'))
+        if font is not None: return font.get('typeface')
+    return name
+
+
+def protected_text(shape):
+    """Exact text/line breaks and effective run typefaces; never normalize whitespace."""
+    from .inventory import walk_shapes
+    return [(s.text,[(r.text,font_family(r,p,s)) for p in s.text_frame.paragraphs for r in p.runs])
+            for _,s in walk_shapes([shape]) if s.has_text_frame]
+
+
 def materialize(original, copied):
     from .inventory import walk_shapes
     for (_,source),(_,target) in zip(walk_shapes([original]),walk_shapes([copied])):
@@ -70,6 +111,8 @@ def materialize(original, copied):
                 for key in ('bold','italic','underline'):
                     setattr(dr.font,key,bool(resolve(sr,sp,source,key)))
                 dr.font.size=resolve(sr,sp,source,'size',Pt(20))
+                family=font_family(sr,sp,source)
+                if family: dr.font.name=family
     # Resolve theme tokens against the source before attaching its XML to a new theme.
     # Leave the standard OOXML color transforms intact so tint/shade/alpha are retained.
     part=original.part

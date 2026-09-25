@@ -28,8 +28,9 @@ def audit(slide, width, height):
         issues.append({'sev':sev,'type':kind,'note':note,
                        **({'object_ids':[object_id]} if object_id else {})})
 
-    def visit(shapes, transform=lambda l,t,w,h:(l,t,w,h), depth=0):
+    def visit(shapes, transform=lambda l,t,w,h:(l,t,w,h), depth=0, protected=False):
         for sh in shapes:
+            protected_style=protected or sh.name.endswith(('|logo','|code'))
             raw=(sh.left,sh.top,sh.width,sh.height)
             if any(v is None for v in raw):
                 finding('warn','unresolved_geometry',f'Geometry unavailable for shape {sh.shape_id}')
@@ -45,7 +46,7 @@ def audit(slide, width, height):
                 if sh.rotation:
                     finding('warn','group_rotation','Rotated group bounds require visual inspection.')
                 local=_group_xf(sh)
-                visit(sh.shapes,lambda a,b,c,d:transform(*local(a,b,c,d)),depth+1)
+                visit(sh.shapes,lambda a,b,c,d:transform(*local(a,b,c,d)),depth+1,protected_style)
                 continue
             frames=[]
             fill=None
@@ -85,13 +86,13 @@ def audit(slide, width, height):
                         color=rgb(r.font.color) or rgb(p.font.color)
                         if not name or size is None or color is None:
                             finding('warn','unresolved_style',f'Inherited font/size/color needs review on shape {sh.shape_id}.')
-                        if name and name != B.FONT:
+                        if name and name != B.FONT and not protected_style:
                             finding('warn','font',f'Font {name} differs from Arial.')
                         if sh.name.endswith('|title') and size and abs(size.pt-B.TITLE_PT)>.1:
                             finding('fail','title_size',f'Title must use {B.TITLE_PT} pt text.')
                         if size and size.pt < B.BODY_MIN_PT:
                             finding('warn','font_size',f'{size.pt:g} pt text is below the body minimum; verify its citation/caption role.')
-                        if color and color not in B.ALLOWED_TEXT | {B.BLUE}:
+                        if color and color not in B.ALLOWED_TEXT | {B.BLUE} and not protected_style:
                             finding('warn','source_color',f'Preserved source text color #{color} requires a scoped brand exception.')
                         if background==B.RED and color and color!=B.WHITE:
                             finding('fail','contrast','Text on the approved red fill must be white.')

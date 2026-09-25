@@ -22,7 +22,7 @@ export function UploadStep({
       <div className="eyebrow">NEW PRESENTATION</div>
       <h1 className="mt-1 text-3xl font-extrabold text-stevens-ink">Build a better deck</h1>
       <p className="mt-2 max-w-xl text-sm text-stevens-gray">
-        Upload a PowerPoint to preserve its content on the Stevens template.
+        Upload a PowerPoint or PDF to preserve its content on the Stevens template.
         Review a generated candidate and its verification findings before downloading
         a verified final deck. Unsupported content and unfinished checks are reported.
       </p>
@@ -56,19 +56,19 @@ export function UploadStep({
               {"\u2191"}
             </div>
             <div className="mt-4 text-base font-extrabold text-stevens-blue">
-              Drop your PowerPoint here
+              Drop your PowerPoint or PDF here
             </div>
             <div className="mt-1 text-xs text-stevens-gray">or</div>
-            <button className="btn-red mt-3">Choose .pptx file</button>
+            <button className="btn-red mt-3">Choose .pptx or .pdf file</button>
             <div className="mt-3 text-[11px] text-stevens-gray">
-              Session files expire after one idle hour. Explicitly saved benchmarks are retained.
+              Files are used only for processing and expire after one idle hour. Scanned PDFs need OCR first.
             </div>
           </>
         )}
         <input
           ref={inputRef}
           type="file"
-          accept=".pptx"
+          accept=".pptx,.pdf"
           hidden
           onChange={(e) => pick(e.target.files)}
         />

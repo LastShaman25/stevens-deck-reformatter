@@ -15,6 +15,7 @@ from app.ai import providers, layout, pipeline
 from app.qa.artifact_coverage import audit
 from test_regressions import fixture, text
 from test_artifacts import rich_fixture
+from rubric_fixtures import passed_checks, role_map, source_choice, repair_evidence
 
 
 @pytest.fixture
@@ -22,7 +23,7 @@ def config(tmp_path, monkeypatch):
     env=tmp_path/'ai.env'
     env.write_text('ANTHROPIC_API_KEY=test-anthropic\nGEMINI_API_KEY=test-gemini\n')
     monkeypatch.setattr(providers,'ENV_FILE',env)
-    for name in ['OPENAI_API_KEY','OPENAI_MODEL','OPENAI_REASONING_EFFORT','ANTHROPIC_API_KEY','GEMINI_API_KEY','STEVENS_AI_PLANNER','STEVENS_AI_REVIEWER',
+    for name in ['OPENAI_API_KEY','OPENAI_MODEL','OPENAI_REASONING_EFFORT','OPENAI_REVIEW_REASONING_EFFORT','ANTHROPIC_API_KEY','GEMINI_API_KEY','STEVENS_AI_PLANNER','STEVENS_AI_REVIEWER',
                  'STEVENS_AI_MAX_CALLS','STEVENS_OFFLINE','ANTHROPIC_MODEL','GEMINI_MODEL']:
         monkeypatch.delenv(name,raising=False)
     # Legacy provider fixtures explicitly request legacy auto selection.
@@ -38,7 +39,8 @@ def identity_plan(objects):
 
 def mocked_provider(role,system,payload,images=(),max_tokens=0):
     assert images and all(Path(path).is_file() for _,path in images)
-    value=identity_plan(payload['objects']) if role=='planner' else {'verdict':'passed','summary':'Synthetic review','findings':[]}
+    value=role_map(payload['objects']) if role=='element_roles' else identity_plan(payload['objects']) if role=='planner' else {'verdict':'passed','summary':'Synthetic review','findings':[],'rubric':passed_checks()}
+    if payload.get('stage')=='source_decisions':value=source_choice(payload)
     return {'status':'completed','provider':'mock','model':'offline-test','data':value}
 
 
@@ -95,7 +97,7 @@ def test_real_request_contract_and_truncation(config,monkeypatch,tmp_path,provid
     monkeypatch.setattr(providers.requests,'post',post)
     assert providers.generate('planner','System',{'test':'Full content'},[('Source',path)])['data']=={'ok':True}
     assert 'key=' not in captured['url']
-    assert captured['timeout']==(15,120)
+    assert captured['timeout']==(15,180)
     assert ('x-api-key' if provider=='anthropic' else 'x-goog-api-key') in captured['headers']
     assert 'image/png' in json.dumps(captured['json'])
     if provider=='anthropic':returned['stop_reason']='max_tokens'
@@ -128,7 +130,8 @@ def test_native_geometry_edit_preserves_relationships(tmp_path):
     report=grounded.build_deck(source,candidate);p=Presentation(candidate);plans={}
     for i,slide in enumerate(p.slides):
         value=identity_plan(layout.describe(slide))
-        for o in value['objects']:o['x']+=.03
+        for o in value['objects']:
+            if i > 0: o['x']+=.003
         plans[i]=layout.LayoutPlan.model_validate(value)
     updated,changed=layout.apply(candidate,out,plans,report)
     assert changed>0 and updated['llm_used']
@@ -177,7 +180,9 @@ def test_ai_success_requires_all_checks_and_exact_download(ai_session):
     assert r['checks']['ai_redesign']['status']=='passed',r['findings']
     assert r['checks']['ai_visual_review']['status']=='passed'
     assert r['checks']['artifact_coverage']['status']=='passed'
-    assert len(r['ai_pipeline']['calls'])==6
+    assert len(r['ai_pipeline']['calls'])==12
+    assert [c['role'] for c in r['ai_pipeline']['calls'][3:9]]==['element_roles','planner']*3
+    assert len(r['ai_pipeline']['element_roles'])==3
     assert all(v['candidate_sha256']==r['candidate_sha256'] for v in r['ai_pipeline']['final_reviews'])
     ids=[f['id'] for f in r['findings'] if f['severity']=='review']
     if ids:generations.decide(ai_session,generations.Decision(generation_id=r['generation_id'],candidate_sha256=r['candidate_sha256'],finding_ids=ids,rationale='Synthetic fixture inspection'))
@@ -202,7 +207,7 @@ def test_ai_incomplete_never_releases(ai_session,monkeypatch,config,fault):
     assert r['state'] in ('error','failed'),r
     assert any(f['severity']=='blocking' for f in r['findings'])
     assert TestClient(app).get(f'/api/sessions/{ai_session.id}/download',params={'generation_id':r['generation_id']}).status_code==409
-    assert TestClient(app).get(f'/api/sessions/{ai_session.id}/download',params={'generation_id':r['generation_id'],'draft':True}).status_code==200
+    assert TestClient(app).get(f'/api/sessions/{ai_session.id}/download',params={'generation_id':r['generation_id'],'draft':True}).status_code==409
 
 
 def test_repair_rollback_keeps_reviewed_bytes(ai_session,monkeypatch):
@@ -211,12 +216,14 @@ def test_repair_rollback_keeps_reviewed_bytes(ai_session,monkeypatch):
         nonlocal review_calls
         result=mocked_provider(role,system,payload,images,max_tokens)
         if role=='planner':
-            for obj in result['data']['objects']:obj['x']+=.01
-        else:
+            for obj in result['data']['objects']:
+                if payload['slide'] > 0: obj['x']+=.003
+        elif role=='reviewer':
             review_calls+=1
             count=1 if review_calls<=3 else 2
-            result['data']={'verdict':'needs_review','summary':'Requires spacing review','findings':[
-                {'category':'layout','severity':'review','object_ids':[],'message':'Spacing needs inspection'} for _ in range(count)]}
+            findings=[{**repair_evidence(),'criterion':'spatial_layout','severity':'review','object_ids':[],
+                'message':f'Spacing needs inspection in region {i}'} for i in range(count)]
+            result['data']={'verdict':'needs_review','summary':'Requires spacing review','rubric':passed_checks(findings),'findings':findings}
         return result
     monkeypatch.setattr(providers,'generate',provider)
     r=generations.build(ai_session,mode='ai',repair_passes=1)
@@ -243,6 +250,8 @@ def test_ai_cannot_delete_content_even_if_model_reviewer_passes(ai_session,monke
 
 def test_api_mode_validation_and_diagnostics(ai_session,monkeypatch):
     client=TestClient(app)
+    assert generations.GenerateRequest().mode=='ai'
+    assert client.post(f'/api/sessions/{ai_session.id}/generate',json={'mode':'preserve'}).status_code==422
     assert client.post(f'/api/sessions/{ai_session.id}/generate',json={'mode':'unknown'}).status_code==422
     assert client.post(f'/api/sessions/{ai_session.id}/generate',json={'mode':'ai','repair_passes':10}).status_code==422
     monkeypatch.setattr(providers,'generate',lambda *a,**kw:{'status':'completed','data':{'ok':True},'model':'mock'})
@@ -263,7 +272,8 @@ def test_ai_native_edits_with_real_powerpoint_render(tmp_path,monkeypatch,config
         def provider(role,system,payload,images=(),max_tokens=0):
             result=mocked_provider(role,system,payload,images,max_tokens)
             if role=='planner':
-                for obj in result['data']['objects']:obj['x']+=.05
+                for obj in result['data']['objects']:
+                    if payload['slide']>0: obj['x']+=.05
             return result
         monkeypatch.setattr(providers,'generate',provider)
         r=generations.build(s,mode='ai',repair_passes=0)

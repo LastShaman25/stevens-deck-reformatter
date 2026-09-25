@@ -41,6 +41,8 @@ def source_objects(slide):
     """Include inherited non-placeholder content, not authoring prompts."""
     for owner, label in [(slide.slide_layout.slide_master, 'master'),
                          (slide.slide_layout, 'layout'), (slide, 'slide')]:
+        if label=='master' and slide.slide_layout._element.get('showMasterSp')=='0':
+            continue
         if label != 'slide' and slide._element.get('showMasterSp') == '0':
             continue
         for shape in owner.shapes:
@@ -89,7 +91,7 @@ def notes_links(slide, numbers):
     return links(SimpleNamespace(_element=element), slide.notes_slide.part, numbers)
 
 
-def relationship_signature(part, seen=None):
+def relationship_signature(part, seen=None, normalize_blob=None):
     """Content fingerprints for chart/workbook dependencies, independent of rIds."""
     seen = set() if seen is None else seen
     if part in seen:
@@ -97,10 +99,10 @@ def relationship_signature(part, seen=None):
     seen = seen | {part}
     return {
         'content_type': part.content_type,
-        'sha256': hashlib.sha256(part.blob).hexdigest(),
+        'sha256': hashlib.sha256(normalize_blob(part) if normalize_blob else part.blob).hexdigest(),
         'dependencies': sorted([
             {'type': rel.reltype, 'target': rel.target_ref if rel.is_external else
-             relationship_signature(rel.target_part, seen)}
+             relationship_signature(rel.target_part, seen, normalize_blob)}
             for rel in part.rels.values()
         ], key=lambda x: str(x)),
     }

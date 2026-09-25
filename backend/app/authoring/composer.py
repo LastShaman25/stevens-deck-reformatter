@@ -10,6 +10,7 @@ from pptx.chart.data import CategoryChartData, XyChartData
 from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION
 from .. import grounded, brand
 from .graphics import render_plot, render_equation
+from slide_engine import template_policy as T
 
 
 def text(shape, lines, size):
@@ -30,18 +31,24 @@ def compose(spec, path, assets, pages=()):
     for item in list(prs.slides._sldIdLst):
         prs.part.drop_rel(item.rId); prs.slides._sldIdLst.remove(item)
     layout = next(l for l in prs.slide_layouts if l.name == 'Title Only')
+    cover_layout = next(l for l in prs.slide_layouts if l.name == '1_Title Slide')
     manifest = []
     for index, content in enumerate(spec.slides):
-        slide = prs.slides.add_slide(layout)
+        slide = prs.slides.add_slide(cover_layout if index==0 else layout)
         for sh in list(slide.shapes):
             sh._element.getparent().remove(sh._element)
-        title = slide.shapes.add_textbox(Inches(.72), Inches(.4), Inches(11.7), Inches(1.4))
+        title = slide.shapes.add_textbox(*(Inches(v) for v in (T.COVER_TITLE if index==0 else (.7,.4,11.7,1.4))))
         title.name = 'authored-title'
         text(title, [content.title], 40)
         visual = any(v is not None for v in (content.chart, content.plot, content.equation, content.figure_page, content.table))
-        body = slide.shapes.add_textbox(Inches(.75), Inches(2), Inches(4.0 if visual else 11.5), Inches(4.4))
+        body = slide.shapes.add_textbox(*(Inches(v) for v in (T.COVER_DETAILS if index==0 else (.75,2,4.0 if visual else 11.5,4.4))))
         body.name = 'authored-body'
         text(body, content.bullets, 20 if sum(map(len, content.bullets)) < 600 else 18)
+        if index==0:
+            for shape in (title,body):
+                for paragraph in shape.text_frame.paragraphs:
+                    paragraph.font.color.rgb=RGBColor.from_string(brand.WHITE)
+        vx,vy,vw,vh=T.COVER_SUPPORT if index==0 else (5,2,7.2,4.3)
         image_hash = None
         if content.chart:
             chart = content.chart
@@ -56,7 +63,7 @@ def compose(spec, path, assets, pages=()):
             kinds = {'bar': XL_CHART_TYPE.BAR_CLUSTERED, 'column': XL_CHART_TYPE.COLUMN_CLUSTERED,
                      'line': XL_CHART_TYPE.LINE, 'pie': XL_CHART_TYPE.PIE, 'area': XL_CHART_TYPE.AREA,
                      'scatter': XL_CHART_TYPE.XY_SCATTER}
-            native = slide.shapes.add_chart(kinds[chart.kind], Inches(5), Inches(2), Inches(7.2), Inches(4.3), data).chart
+            native = slide.shapes.add_chart(kinds[chart.kind], *(Inches(v) for v in (vx,vy,vw,vh)), data).chart
             native.font.name = 'Arial'; native.font.size = Pt(14)
             native.has_title = False
             native.has_legend = len(chart.series) > 1 or chart.kind == 'pie'
@@ -69,7 +76,7 @@ def compose(spec, path, assets, pages=()):
                         axis.has_title = True; axis.axis_title.text_frame.text = label
         elif content.table:
             data = [content.table.headers]+content.table.rows
-            table = slide.shapes.add_table(len(data),len(data[0]),Inches(5),Inches(2),Inches(7.2),Inches(4.3)).table
+            table = slide.shapes.add_table(len(data),len(data[0]),*(Inches(v) for v in (vx,vy,vw,vh))).table
             for ri, row in enumerate(data):
                 for ci, value in enumerate(row):
                     cell = table.cell(ri,ci); cell.text = value
@@ -84,8 +91,8 @@ def compose(spec, path, assets, pages=()):
                 if not page: raise ValueError('Figure source page does not exist.')
                 image = Path(page['image'])
             with Image.open(image) as im: w, h = im.size
-            scale = min(7.2/w, 4.3/h)
-            picture = slide.shapes.add_picture(str(image), Inches(5+(7.2-w*scale)/2), Inches(2+(4.3-h*scale)/2),
+            scale = min(vw/w, vh/h)
+            picture = slide.shapes.add_picture(str(image), Inches(vx+(vw-w*scale)/2), Inches(vy+(vh-h*scale)/2),
                                              width=Inches(w*scale), height=Inches(h*scale))
             picture.name = 'authored-visual'
             picture._element.nvPicPr.cNvPr.set('descr', content.equation or ('Plot: '+', '.join(content.plot.functions) if content.plot else f'Source PDF page {content.figure_page}'))

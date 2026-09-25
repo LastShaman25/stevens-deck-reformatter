@@ -13,6 +13,7 @@ from pptx.util import Inches
 from app import auth, sessions, generations
 from app.main import app
 from app.ai import output_qa, providers
+from rubric_fixtures import qa_review
 from app.authoring import service, composer, graphics
 from app.authoring.models import CreationRequest, Outline, OutlineSlide, DeckSpec, SlideSpec, ChartSpec, PlotSpec, Series
 
@@ -241,7 +242,7 @@ def qa_fixture(tmp_path,count=12):
         image=tmp_path/f'slide-{i}.png'; Image.new('RGB',(320,180),(i*15%255,230,255)).save(image)
         pages.append({'output_slide':i,'success':True,'png':str(image)})
     candidate=tmp_path/'candidate.pptx'; prs.save(candidate)
-    return {'candidate':str(candidate),'checks':{'render_verification':{'candidate_sha256':generations.sha256(candidate),'pages':pages}}}
+    return {'mode':'author','candidate':str(candidate),'checks':{'render_verification':{'candidate_sha256':generations.sha256(candidate),'pages':pages}}}
 
 
 def test_ordered_qa_covers_all_12_slides_and_global_synthesis(tmp_path,monkeypatch):
@@ -249,7 +250,7 @@ def test_ordered_qa_covers_all_12_slides_and_global_synthesis(tmp_path,monkeypat
     def provider(role,system,payload,images=(),**kwargs):
         requests.append((copy.deepcopy(payload),images))
         assert [int(Path(path).stem.split('-')[1])+1 for _,path in images] == payload['expected']
-        return {'status':'completed','data':{'reviewed':payload['expected'],'summary':'Synthetic reviewer','findings':[]}}
+        return {'status':'completed','data':qa_review(payload)}
     monkeypatch.setattr(providers,'generate',provider)
     checks=output_qa.run(sess,record)
     assert all(c['status']=='passed' for c in checks.values())
@@ -257,7 +258,7 @@ def test_ordered_qa_covers_all_12_slides_and_global_synthesis(tmp_path,monkeypat
     assert len(record['output_manifest']) == 12
 
 
-@pytest.mark.parametrize('fault',['missing','swapped','stale','hidden','partial_response','timeout','unknown_id'])
+@pytest.mark.parametrize('fault',['missing','swapped','stale','hidden','partial_response','timeout','unknown_id','missing_audit','missing_criterion','duplicate_criterion','silent_blocker'])
 def test_qa_faults_block_verification(tmp_path,monkeypatch,fault):
     sess=sessions.create(); record=qa_fixture(tmp_path)
     pages=record['checks']['render_verification']['pages']
@@ -268,9 +269,14 @@ def test_qa_faults_block_verification(tmp_path,monkeypatch,fault):
         prs=Presentation(record['candidate']);prs.slides[0]._element.set('show','0');prs.save(record['candidate'])
         record['checks']['render_verification']['candidate_sha256']=generations.sha256(record['candidate'])
     def provider(role,system,payload,**kwargs):
-        return {'status':'timeout'} if fault=='timeout' else {'status':'completed','data':{
-            'reviewed':payload['expected'][:-1] if fault=='partial_response' else payload['expected'],
-            'summary':'Mock','findings':[{'slides':[999],'category':'accuracy','severity':'blocking','accuracy':'contradicted','message':'Invalid reference','evidence':''}] if fault=='unknown_id' else []}}
+        value=qa_review(payload)
+        if fault=='partial_response':value['reviewed']=value['reviewed'][:-1]
+        if fault=='unknown_id':value['findings']=[{'slides':[999],'criterion':'content_accuracy','severity':'blocking','accuracy':'contradicted','message':'Invalid reference','evidence':''}]
+        if fault=='missing_audit':value['slide_audits'].pop()
+        if fault=='missing_criterion':value['slide_audits'][0]['checks'].pop()
+        if fault=='duplicate_criterion':value['slide_audits'][0]['checks'][-1]=value['slide_audits'][0]['checks'][0]
+        if fault=='silent_blocker':value['slide_audits'][0]['checks'][2]['status']='blocking'
+        return {'status':'timeout'} if fault=='timeout' else {'status':'completed','data':value}
     monkeypatch.setattr(providers,'generate',provider)
     checks=output_qa.run(sess,record)
     assert checks['output_qa_coverage']['status']=='error'
@@ -298,7 +304,7 @@ def test_authoring_api_approval_release_identity_and_cleanup(monkeypatch):
                 'pages':[{'output_slide':0,'success':True,'png':str(directory/'slide-0.png')}]}
     monkeypatch.setattr(service.render_verify,'check',render)
     monkeypatch.setattr(providers,'generate',lambda role,system,payload,**kw:{'status':'completed',
-        'data':{'reviewed':payload['expected'],'summary':'Synthetic contract check','findings':[]}})
+        'data':qa_review(payload)})
     deck=DeckSpec(slides=[SlideSpec(id='s0',title='Function 0',bullets=['One verified statement.'])])
     result=admin.put(f'/api/jobs/{sid}/content',json={'revision':1,'deck':deck.model_dump()})
     assert result.status_code==200,result.text
@@ -327,9 +333,10 @@ def test_bounded_visual_repair_rerenders_and_reviews_final_candidate(monkeypatch
         calls.append(role)
         if role=='author':
             return {'status':'completed','data':SlideSpec(id='s0',title='Function 0',bullets=['A clear explanation.']).model_dump()}
-        findings=[{'slides':[1],'category':'visual','severity':'blocking','accuracy':'not_applicable',
+        from rubric_fixtures import repair_evidence
+        findings=[{**repair_evidence(),'slides':[1],'criterion':'visual_legibility','severity':'blocking','accuracy':'not_applicable',
                    'message':'Synthetic first-pass legibility defect','evidence':'Synthetic fixture'}] if len(renders)==1 else []
-        return {'status':'completed','data':{'reviewed':payload['expected'],'summary':'Synthetic contract test','findings':findings}}
+        return {'status':'completed','data':qa_review(payload,findings)}
     monkeypatch.setattr(service.render_verify,'check',render);monkeypatch.setattr(providers,'generate',provider)
     result=service.generate(sess)
     assert result['generation']['state']=='ready'

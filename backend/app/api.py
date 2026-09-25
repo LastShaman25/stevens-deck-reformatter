@@ -38,6 +38,8 @@ def info(sess):
             'workflow': sess.workflow, **sess.analysis,
             'capabilities': capabilities(), 'revisions': sess.revisions,
             'revision_version': sess.revision_version, 'generation': generations.public(sess.generation),
+            'preview_generation': generations.public(next((r for r in reversed(list(sess.history.values()))
+                if r.get('candidate_sha256') and r.get('state') != 'checking'), None)),
             'ai_check': sorted(sess.ai_check), 'ai_results': sess.ai_results, 'benchmarked': sess.benchmarked,
             'generated': bool(sess.generation and sess.generation['state'] == 'ready')}
 
@@ -49,8 +51,8 @@ def health():
 
 @router.post('/sessions')
 async def create_session(file: UploadFile = File(...)):
-    if not (file.filename or '').lower().endswith('.pptx'):
-        raise HTTPException(400, 'Please upload a .pptx file.')
+    if not (file.filename or '').lower().endswith(('.pptx','.pdf')):
+        raise HTTPException(400, 'Please upload a .pptx or .pdf file.')
     data = await file.read(sessions.MAX_UPLOAD_BYTES + 1)
     if len(data) > sessions.MAX_UPLOAD_BYTES:
         raise HTTPException(413, 'File too large (60 MB max).')
@@ -62,7 +64,12 @@ def analyze_upload(filename, data):
     try:
         with sessions.job(sess):
             sess.original_name = os.path.basename(filename)
-            Path(sess.source_path).write_bytes(data)
+            is_pdf=filename.lower().endswith('.pdf')
+            if is_pdf:
+                from .pdf_import import convert
+                Path(sess.source_pdf).write_bytes(data)
+                sess.pdf_import=convert(sess.source_pdf,sess.source_path,lambda i:sess.preview_path(i,'before'))
+            else: Path(sess.source_path).write_bytes(data)
             import zipfile
             with zipfile.ZipFile(sess.source_path) as archive:
                 entries = archive.infolist()
@@ -76,13 +83,14 @@ def analyze_upload(filename, data):
             sess.analysis = grounded.analyze(sess.source_path)
             # Source previews are optional. Their absence is visible, never QA evidence.
             try:
-                rendering.render_to_pdf(sess.source_path, sess.source_pdf)
-                rendering.rasterize_pdf(sess.source_pdf, lambda i: sess.preview_path(i, 'before'))
+                if not is_pdf:
+                    rendering.render_to_pdf(sess.source_path, sess.source_pdf)
+                    rendering.rasterize_pdf(sess.source_pdf, lambda i: sess.preview_path(i, 'before'))
             except Exception:
                 pass
     except Exception as exc:
         sessions.delete(sess.id)
-        raise HTTPException(400, f'Could not analyze PowerPoint: {type(exc).__name__}: {exc}')
+        raise HTTPException(400, f'Could not analyze presentation: {type(exc).__name__}: {exc}')
     return info(sess)
 
 
@@ -100,14 +108,20 @@ def preview(sid: str, index: int, variant: Literal['before','after']='after', ge
                 slide_index(sess, index)
                 path = Path(sess.preview_path(index, 'before'))
             else:
-                record = sess.generation
-                if not record or generation_id != record['generation_id']:
+                # Historical images are reference-only. Downloads and decisions
+                # still require the current generation and revision identity.
+                record = sess.history.get(generation_id)
+                if not record or record.get('state') == 'checking':
                     raise HTTPException(409, 'No matching generated preview.')
-                generations.verify_identity(sess, record, ready=False)
+                if not Path(record['candidate']).is_file() or generations.sha256(record['candidate']) != record.get('candidate_sha256'):
+                    raise HTTPException(409, 'Generated artifact changed.')
                 count = (record.get('report') or {}).get('slide_count', 0)
                 if index < 0 or index >= count:
                     raise HTTPException(404, 'Output slide not found.')
                 path = Path(record['directory'], 'render', f'slide-{index}.png')
+                for item in record.get('output_manifest', []):
+                    if Path(item['image']) == path and (not path.is_file() or generations.sha256(path) != item['sha256']):
+                        raise HTTPException(409, 'Rendered artifact changed.')
             if not path.exists():
                 raise HTTPException(404, 'Rendered preview unavailable.')
             return Response(path.read_bytes(), media_type='image/png', headers={'Cache-Control':'no-store'})
@@ -142,8 +156,6 @@ def generate(sid: str, body: generations.GenerateRequest = generations.GenerateR
     try:
         with sessions.job(sess):
             record = generations.build(sess,mode=body.mode,repair_passes=body.repair_passes)
-            for idx in sorted(sess.ai_check) if body.mode=='preserve' else []:
-                run_ai(sess, idx)
             return {'ok': record['state'] != 'error', 'generation': generations.public(record),
                     'built_slides': (record.get('report') or {}).get('slide_count', 0)}
     except ValueError as exc:
@@ -236,7 +248,8 @@ def ai_check(sid: str, index: int, body: AiRequest):
 
 def artifact_bytes(sess, ready):
     record = sess.generation
-    generations.verify_identity(sess, record, ready=ready)
+    # A legacy draft=true request must never bypass mandatory QA.
+    generations.verify_identity(sess, record, ready=True)
     data = Path(record['candidate']).read_bytes()
     if hashlib.sha256(data).hexdigest() != record['candidate_sha256']:
         raise ValueError('ARTIFACT_CHANGED')
@@ -244,16 +257,23 @@ def artifact_bytes(sess, ready):
 
 
 @router.get('/sessions/{sid}/download')
-def download(sid: str, draft: bool=False, generation_id: str | None=None):
+def download(sid: str, draft: bool=False, generation_id: str | None=None, format: Literal['pptx','pdf']='pptx'):
     sess = session(sid)
     try:
         with sessions.job(sess):
             if not sess.generation or generation_id != sess.generation['generation_id']:
                 raise ValueError('GENERATION_MISMATCH')
             data = artifact_bytes(sess, ready=not draft)
+            if format=='pdf':
+                record=sess.generation
+                export=record.get('pdf_export',{})
+                path=Path(export.get('path',''))
+                if not path.is_file() or export.get('candidate_sha256')!=record['candidate_sha256'] or generations.sha256(path)!=export.get('sha256'):
+                    raise ValueError('Verified PDF render is unavailable or changed. Regenerate this candidate.')
+                data=path.read_bytes()
             sess.close_after = min(__import__('time').time()+600, sess.expires)
-            filename = 'Stevens-unverified-draft.pptx' if draft else 'Stevens-verified.pptx'
-            return Response(data, media_type='application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            filename = ('Stevens-unverified-draft.' if draft else 'Stevens-verified.')+format
+            return Response(data, media_type='application/pdf' if format=='pdf' else 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
                 headers={'Content-Disposition':f'attachment; filename="{filename}"', 'Cache-Control':'no-store'})
     except ValueError as exc:
         raise HTTPException(409, str(exc))

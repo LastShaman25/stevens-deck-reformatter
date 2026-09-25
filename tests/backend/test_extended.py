@@ -101,7 +101,7 @@ def test_benchmark_is_exact_and_idempotent(sess,tmp_path,monkeypatch):
     assert len(log.read_text().splitlines())==1
     saved=json.loads(log.read_text())
     assert saved['candidate_sha256']==generations.sha256(store/first['deck'])
-    assert saved['patterns']['layout_histogram']=={'Native preserved layout':3}
+    assert saved['patterns']['layout_histogram']=={'1_Title Slide':1, 'Title Only':2}
 
 
 def test_render_page_mismatch_and_stale_directory_block(tmp_path,monkeypatch):

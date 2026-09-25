@@ -47,7 +47,7 @@ def test_required_verifier_crash_blocks_final(sess,monkeypatch):
     assert r['state']=='error'
     client=TestClient(app);base=f'/api/sessions/{sess.id}'
     assert client.get(base+'/download',params={'generation_id':r['generation_id']}).status_code==409
-    assert client.get(base+'/download',params={'generation_id':r['generation_id'],'draft':True}).status_code==200
+    assert client.get(base+'/download',params={'generation_id':r['generation_id'],'draft':True}).status_code==409
     assert client.post(base+'/benchmark',json={'generation_id':r['generation_id']}).status_code==410
     with pytest.raises(ValueError):
         generations.decide(sess,generations.Decision(generation_id=r['generation_id'],candidate_sha256=r['candidate_sha256'],finding_ids=[r['findings'][-1]['id']],rationale='Cannot override'))
@@ -64,6 +64,17 @@ def test_revision_invalidates_and_indices_404(sess,monkeypatch):
     assert client.post(f'{base}/slides/0/revise',json={'tags':['split']}).status_code==200
     assert sess.generation is None
     assert client.get(base+'/download',params={'generation_id':r['generation_id']}).status_code==409
+    assert client.get(base+'/download',params={'generation_id':r['generation_id'],'draft':True}).status_code==409
+    image = Path(r['directory'], 'render', 'slide-0.png')
+    image.parent.mkdir(exist_ok=True)
+    image.write_bytes(b'previous-preview')
+    preview = f'{base}/slides/0/preview?variant=after&generation_id={r["generation_id"]}'
+    assert client.get(preview).content == b'previous-preview'
+    assert client.get(base).json()['preview_generation']['generation_id'] == r['generation_id']
+    assert client.post(base+'/decisions',json={'generation_id':r['generation_id'],
+        'candidate_sha256':r['candidate_sha256'],'finding_ids':['old'], 'rationale':'Old candidate'}).status_code==409
+    Path(r['candidate']).write_bytes(b'changed')
+    assert client.get(preview).status_code==409
 
 
 def test_active_job_not_expired_or_deleted(sess):

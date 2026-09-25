@@ -28,13 +28,15 @@ def configured(provider):
 
 
 def role_config(role):
-    explicit=setting('STEVENS_AI_PLANNER' if role in ('planner','outline','author','extractor') else 'STEVENS_AI_REVIEWER','openai')
-    preferred=('openai','anthropic','gemini') if role=='planner' else ('openai','gemini','anthropic')
+    explicit=setting('STEVENS_AI_PLANNER' if role in ('planner','element_roles','outline','author','extractor') else 'STEVENS_AI_REVIEWER','openai')
+    preferred=('openai','anthropic','gemini') if role in ('planner','element_roles') else ('openai','gemini','anthropic')
     provider=next((p for p in preferred if configured(p)),preferred[0]) if explicit=='auto' else explicit
     if provider not in PROVIDERS:
         return {'provider':provider,'model':'','configured':False}
     name=PROVIDERS[provider]+'_MODEL'
-    return {'provider':provider,'model':setting(name,DEFAULTS[name]),'configured':configured(provider)}
+    result={'provider':provider,'model':setting(name,DEFAULTS[name]),'configured':configured(provider)}
+    if provider=='openai':result['reasoning_effort']=reasoning_effort(role)
+    return result
 
 
 def capabilities():
@@ -43,8 +45,15 @@ def capabilities():
             'independent_providers':planner['provider'] != reviewer['provider']}
 
 
+def reasoning_effort(role):
+    base=setting('OPENAI_REASONING_EFFORT','none')
+    # Logo identity and paired visual judgments failed at none in the live eval.
+    # Keep planning inexpensive; preserve higher explicit global settings.
+    return setting('OPENAI_REVIEW_REASONING_EFFORT','low' if base=='none' else base) if role in ('reviewer','output_qa') else base
+
+
 def _parse(text):
-    value=text.strip()
+    value=text.lstrip('\ufeff').strip()
     if value.startswith('```'):
         value=re.sub(r'^```(?:json)?\s*|\s*```$','',value)
     return json.loads(value)
@@ -62,6 +71,18 @@ def strict_schema(value):
 
 
 def generate(role, system, payload, images=(), max_tokens=16000):
+    """One bounded retry for transport or malformed responses; every attempt consumes budget."""
+    attempts=[]
+    for _ in range(2):
+        result=_generate_once(role,system,payload,images,max_tokens)
+        attempts.append(result['status'])
+        retryable=result['status'] in ('timeout','provider_error') or (
+            result['status']=='invalid_response' and result.get('failure_stage') in ('response_json','response_content','structured_output'))
+        if not retryable: break
+    return {**result,'request_attempts':len(attempts),'attempt_statuses':attempts}
+
+
+def _generate_once(role, system, payload, images=(), max_tokens=16000):
     from ..sessions import active_session
     sess = active_session.get()
     if sess:
@@ -70,7 +91,7 @@ def generate(role, system, payload, images=(), max_tokens=16000):
             limit = int(setting('STEVENS_AI_MAX_CALLS', '160'))
             reserve = 8 if role != 'output_qa' else 0
             if sess.calls >= limit-reserve or sess.tokens >= int(setting('STEVENS_AI_MAX_TOKENS', '500000')):
-                return {'status':'budget_exceeded', 'message':'Processing budget exhausted; verification cannot be skipped.'}
+                return {'status':'budget_exceeded', 'message':f'Upload budget exhausted ({sess.calls} requests, {sess.tokens} recorded tokens across attempts). Start a new upload to retry; verification cannot be skipped.'}
             sess.calls += 1
         except ValueError:
             return {'status':'cancelled', 'message':'Processing was cancelled or expired.'}
@@ -79,20 +100,27 @@ def generate(role, system, payload, images=(), max_tokens=16000):
     if not config['configured']:
         return {**base,'status':'not_configured','message':f'Configure the {role} provider key in backend/.env.'}
     encoded=[]
+    failure_stage='request_preparation'
     try:
+        import time
+        read_timeout=max(30,min(300,int(setting('STEVENS_AI_REQUEST_TIMEOUT','180'))))
+        if sess and sess.execution_deadline:
+            read_timeout=min(read_timeout,max(1,int(sess.execution_deadline-time.time()-15)))
+        request_timeout=(15,read_timeout)
         for label,path in images:
             data=Path(path).read_bytes()
             if len(data)>8*1024*1024:raise ValueError('Image too large')
             encoded.append((label,base64.b64encode(data).decode('ascii')))
-        prompt=json.dumps(payload,ensure_ascii=False)
+        prompt=json.dumps({k:v for k,v in payload.items() if k!='schema'} if config['provider']=='openai' else payload,ensure_ascii=False)
         if len(prompt)>300000:raise ValueError('Slide payload exceeds the supported size')
         if config['provider']=='openai':
             content=[{'type':'input_text','text':prompt}]
             for label,data in encoded:
                 content += [{'type':'input_text','text':label},
                             {'type':'input_image','image_url':f'data:image/png;base64,{data}','detail':'high'}]
-            effort=setting('OPENAI_REASONING_EFFORT','none')
+            effort=reasoning_effort(role)
             if effort not in ('none','low','medium','high','xhigh','max'):raise ValueError('Invalid reasoning effort')
+            base['reasoning_effort']=effort
             fmt=({'type':'json_schema','name':'slide_'+role,'strict':True,'schema':strict_schema(payload['schema'])}
                  if payload.get('schema') else {'type':'json_object'})
             response=requests.post('https://api.openai.com/v1/responses',
@@ -100,7 +128,7 @@ def generate(role, system, payload, images=(), max_tokens=16000):
                 json={'model':config['model'],'instructions':system,
                       'input':[{'role':'user','content':content}], 'text':{'format':fmt},
                       'reasoning':{'effort':effort},'max_output_tokens':max_tokens,
-                      'store':False,'service_tier':'default'},timeout=(15,120))
+                      'store':False,'service_tier':'default'},timeout=request_timeout)
         elif config['provider']=='anthropic':
             content=[{'type':'text','text':prompt}]
             for label,data in encoded:
@@ -108,7 +136,7 @@ def generate(role, system, payload, images=(), max_tokens=16000):
             response=requests.post('https://api.anthropic.com/v1/messages',headers={
                 'x-api-key':setting('ANTHROPIC_API_KEY'),'anthropic-version':'2023-06-01'},
                 json={'model':config['model'],'max_tokens':max_tokens,'temperature':0,'system':system,
-                      'messages':[{'role':'user','content':content}]},timeout=(15,120))
+                      'messages':[{'role':'user','content':content}]},timeout=request_timeout)
         else:
             if not re.fullmatch(r'[A-Za-z0-9._-]+',config['model']):raise ValueError('Invalid model name')
             parts=[{'text':prompt}]
@@ -117,11 +145,19 @@ def generate(role, system, payload, images=(), max_tokens=16000):
             response=requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{config['model']}:generateContent",
                 headers={'x-goog-api-key':setting('GEMINI_API_KEY')},json={
                     'systemInstruction':{'parts':[{'text':system}]},'contents':[{'role':'user','parts':parts}],
-                    'generationConfig':{'temperature':0,'responseMimeType':'application/json','maxOutputTokens':max_tokens}},timeout=(15,120))
+                    'generationConfig':{'temperature':0,'responseMimeType':'application/json','maxOutputTokens':max_tokens}},timeout=request_timeout)
         if response.status_code!=200:
             status={400:'invalid_request',401:'authentication_error',403:'permission_error',404:'model_unavailable',429:'rate_limited'}.get(response.status_code,'provider_error')
             return {**base,'status':status,'http_status':response.status_code,'message':f"{config['provider']} returned HTTP {response.status_code}. Check key access, model configuration, and quota."}
+        failure_stage='response_json'
         data=response.json()
+        failure_stage='response_content'
+        usage=data.get('usage',data.get('usageMetadata',{}))
+        usage={k:v for k,v in usage.items() if isinstance(v,(int,float)) and not isinstance(v,bool)}
+        base['usage']=usage
+        if sess:
+            sess.tokens += int(usage.get('total_tokens') or usage.get('totalTokenCount') or
+                               (usage.get('input_tokens',0)+usage.get('output_tokens',0)))
         if config['provider']=='openai':
             if data.get('status')=='incomplete' and (data.get('incomplete_details') or {}).get('reason')=='max_output_tokens':
                 return {**base,'status':'truncated','message':'Planner/reviewer output reached its token limit.'}
@@ -150,12 +186,19 @@ def generate(role, system, payload, images=(), max_tokens=16000):
         usage={k:v for k,v in usage.items() if isinstance(v,(int,float)) and not isinstance(v,bool)}
         if sess:
             sess.ensure_active()
-            sess.tokens += int(usage.get('total_tokens') or usage.get('totalTokenCount') or
-                               (usage.get('input_tokens', 0)+usage.get('output_tokens', 0)))
+        failure_stage='structured_output'
         return {**base,'status':'completed','data':_parse(output),'usage':usage}
+    except json.JSONDecodeError:
+        return {**base,'status':'invalid_response','failure_stage':failure_stage,
+                'message':'AI returned malformed JSON. The response was rejected; no redesign or QA result was accepted.'}
     except requests.Timeout:
         return {**base,'status':'timeout','message':'AI request exceeded its time limit.'}
     except requests.RequestException:
         return {**base,'status':'provider_error','message':'AI provider connection failed.'}
-    except (ValueError,KeyError,IndexError,TypeError,AttributeError,OSError):
-        return {**base,'status':'invalid_response','message':'AI input or response could not be validated.'}
+    except (ValueError,KeyError,IndexError,TypeError,AttributeError,OSError) as exc:
+        messages={'request_preparation':'AI request preparation failed (input or configuration).',
+                  'response_json':'AI returned an unreadable response.',
+                  'response_content':'AI returned an incomplete or invalid response structure.',
+                  'structured_output':'AI returned invalid structured output.'}
+        return {**base,'status':'invalid_response','failure_stage':failure_stage,'error_type':type(exc).__name__,
+                'message':messages[failure_stage]+' No redesign or QA result was accepted.'}

@@ -2,16 +2,19 @@ import { beforeEach, expect, test, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import App from './App';
 
-const session = {session_id:'test',name:'Fixture.pptx',slide_count:1,slides:[{index:0,title:'Opening',kind:'title',layout:'native',issues:[],rationale:'',n_body:3,n_images:0,needs_review:false}],capabilities:{gemini:false,libreoffice:false},revisions:{'0':{tags:['dense'],instruction:'Saved note'}},ai_check:[0]};
+const ai={configured:true,independent_providers:true,planner:{provider:'anthropic',model:'claude-test',configured:true},reviewer:{provider:'gemini',model:'gemini-test',configured:true}};
+
+const session = {session_id:'test',name:'Fixture.pptx',slide_count:1,slides:[{index:0,title:'Opening',kind:'title',layout:'native',issues:[],rationale:'',n_body:3,n_images:0,needs_review:false}],capabilities:{gemini:false,libreoffice:false,ai},revisions:{'0':{tags:['dense'],instruction:'Saved note'}},ai_check:[0]};
 const response = (data:unknown,ok=true) => Promise.resolve({ok,json:async()=>data} as Response);
 beforeEach(() => {window.history.replaceState({},'', '/?session=test');vi.restoreAllMocks();});
 
-test('resume restores revisions and optional selections',async()=>{
+test('resume restores revisions without optional mode or check controls',async()=>{
   vi.stubGlobal('fetch',vi.fn(()=>response(session)));
   render(<App/>);
   expect(await screen.findByLabelText('Reviewer note')).toHaveValue('Saved note');
   expect(screen.getByRole('button',{name:'Too dense'})).toHaveAttribute('aria-pressed','true');
-  expect(screen.getByRole('checkbox')).toBeChecked();
+  expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+  expect(screen.queryByRole('combobox',{name:'Generation mode'})).not.toBeInTheDocument();
   expect(screen.getByRole('button',{name:'Previous slide'})).toBeDisabled();
   expect(screen.getByRole('button',{name:'Next slide'})).toBeDisabled();
 });
@@ -20,7 +23,7 @@ test('a failed revision save is visible and stops generation',async()=>{
   const fetcher=vi.fn((url:string)=>url.endsWith('/revise') ? response({detail:'Save failed'},false) : response(session));
   vi.stubGlobal('fetch',fetcher);render(<App/>);
   fireEvent.change(await screen.findByLabelText('Reviewer note'),{target:{value:'Changed'}});
-  fireEvent.click(screen.getByRole('button',{name:'Generate and verify'}));
+  fireEvent.click(screen.getByRole('button',{name:'Redesign + QA'}));
   expect(await screen.findByRole('alert')).toHaveTextContent('Save failed');
   expect(fetcher.mock.calls.some(([url])=>url.endsWith('/generate'))).toBe(false);
 });
@@ -30,7 +33,9 @@ test('failed verification disables final download and benchmark',async()=>{
   vi.stubGlobal('fetch',vi.fn(()=>response({...session,generation})));render(<App/>);
   expect(await screen.findByRole('button',{name:'Download verified PowerPoint and finish'})).toBeDisabled();
   expect(screen.queryByRole('button',{name:'Save approved benchmark'})).not.toBeInTheDocument();
-  expect(screen.getByRole('button',{name:'Download unverified draft'})).toBeEnabled();
+  expect(screen.queryByRole('button',{name:'Download unverified draft'})).not.toBeInTheDocument();
+  expect(screen.queryByRole('button',{name:'Download unverified PDF draft'})).not.toBeInTheDocument();
+  expect(screen.getByRole('button',{name:'Download verified PDF and finish'})).toBeDisabled();
   expect(screen.getByText('Paragraph missing')).toBeVisible();
 });
 
@@ -43,17 +48,32 @@ test('start over clears old deck state and session URL',async()=>{
   expect(window.location.search).toBe('');
 });
 
-const ai={configured:true,independent_providers:true,planner:{provider:'anthropic',model:'claude-test',configured:true},reviewer:{provider:'gemini',model:'gemini-test',configured:true}};
+
+test('editing and saving instructions retains the candidate image but removes approval access',async()=>{
+  const generation={generation_id:'g',candidate_sha256:'abc',state:'ready',built_slides:1,checks:{},findings:[],human_decisions:[],source_to_output_slides:{'0':[0]},corrections:[]};
+  vi.stubGlobal('fetch',vi.fn((url:string)=>response(url.endsWith('/revise')?{ok:true}:{...session,generation})));
+  render(<App/>);
+  const image=await screen.findByAltText('Generated candidate');
+  const url=image.getAttribute('src');
+  fireEvent.change(screen.getByLabelText('Reviewer note'),{target:{value:'Make this larger'}});
+  expect(screen.getByAltText('Generated candidate')).toBe(image);
+  expect(image).toHaveAttribute('src',url);
+  expect(screen.getByText(/Showing the previous candidate/)).toBeVisible();
+  expect(screen.queryByRole('button',{name:'Download verified PowerPoint and finish'})).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button',{name:'Save revision'}));
+  await screen.findByText(/Revision saved/);
+  expect(screen.getByAltText('Generated candidate')).toHaveAttribute('src',url);
+});
 
 test('configured AI mode sends explicit mode and requires full review',async()=>{
   const generation={generation_id:'g',candidate_sha256:'abc',mode:'ai',state:'error',built_slides:1,checks:{ai_visual_review:{status:'error'}},findings:[{id:'ai',severity:'blocking',message:'Provider timed out'}],human_decisions:[],source_to_output_slides:{'0':[0]},corrections:[]};
   const fetcher=vi.fn((url:string,_options?:RequestInit)=>response(url.endsWith('/generate') ? {generation} : {...session,capabilities:{...session.capabilities,ai}}));
   vi.stubGlobal('fetch',fetcher);render(<App/>);
   await screen.findByText(/claude-test/);
-  expect(screen.getByRole('combobox',{name:'Generation mode'})).toHaveValue('ai');
-  expect(screen.getByRole('checkbox')).toBeDisabled();
+  expect(screen.queryByRole('combobox',{name:'Generation mode'})).not.toBeInTheDocument();
+  expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
   expect(screen.getByText(/mandatory visual review/)).toBeVisible();
-  fireEvent.click(screen.getByRole('button',{name:'Generate and verify'}));
+  fireEvent.click(screen.getByRole('button',{name:'Redesign + QA'}));
   await screen.findByText('Provider timed out');
   fireEvent.click(screen.getByText('Deck-wide findings (1)'));
   expect(screen.getByText('Provider timed out')).toBeVisible();
@@ -63,10 +83,9 @@ test('configured AI mode sends explicit mode and requires full review',async()=>
 });
 
 test('missing keys block AI generation and connection testing',async()=>{
-  vi.stubGlobal('fetch',vi.fn(()=>response(session)));render(<App/>);
+  vi.stubGlobal('fetch',vi.fn(()=>response({...session,capabilities:{}})));render(<App/>);
   await screen.findByLabelText('Reviewer note');
-  fireEvent.change(screen.getByRole('combobox',{name:'Generation mode'}),{target:{value:'ai'}});
-  expect(screen.getByRole('button',{name:'Generate and verify'})).toBeDisabled();
+  expect(screen.getByRole('button',{name:'Redesign + QA'})).toBeDisabled();
   expect(screen.getByRole('button',{name:'Test AI connection'})).toBeDisabled();
 });
 
@@ -87,7 +106,7 @@ test('progress polling does not request a preview before rendering finishes',asy
     return response(started ? {...session,generation} : session);
   }));
   render(<App/>);await screen.findByLabelText('Reviewer note');
-  fireEvent.click(screen.getByRole('button',{name:'Generate and verify'}));
+  fireEvent.click(screen.getByRole('button',{name:'Redesign + QA'}));
   await screen.findByText('rendering',{}, {timeout:3500});
   expect(screen.queryByAltText('Generated candidate')).not.toBeInTheDocument();
   finish(await response({generation:{...generation,state:'ready',progress:{stage:'finished'}}}));
@@ -100,8 +119,7 @@ test('OpenAI-only configuration identifies the local key and selected model',asy
   render(<App/>);
   expect(await screen.findByText(/Add OPENAI_API_KEY/)).toBeVisible();
   expect(screen.getByText('Planner: gpt-6-luna · Reviewer: gpt-6-luna')).toBeVisible();
-  fireEvent.change(screen.getByRole('combobox',{name:'Generation mode'}),{target:{value:'ai'}});
-  expect(screen.getByRole('button',{name:'Generate and verify'})).toBeDisabled();
+  expect(screen.getByRole('button',{name:'Redesign + QA'})).toBeDisabled();
 });
 
 const reviewGeneration = {
@@ -171,7 +189,7 @@ test('new generation clears selections even when finding IDs are reused',async()
   render(<App/>);
   fireEvent.click(await screen.findByLabelText('Select all review findings on this page'));
   fireEvent.change(screen.getByLabelText('Review rationale'),{target:{value:'Old candidate inspected'}});
-  fireEvent.click(screen.getByRole('button',{name:'Generate and verify'}));
+  fireEvent.click(screen.getByRole('button',{name:'Redesign + QA'}));
   await waitFor(()=>expect(screen.getByRole('button',{name:'Approve selected (0)'})).toBeDisabled());
   expect(screen.getByLabelText('Review rationale')).toHaveValue('');
 });
@@ -212,10 +230,19 @@ test('slide navigation is disabled during generation and preserves unsaved notes
   fireEvent.click(screen.getByRole('button',{name:'Next slide'}));
   fireEvent.click(screen.getByRole('button',{name:'Previous slide'}));
   expect(screen.getByLabelText('Reviewer note')).toHaveValue('Keep this unsaved note');
-  fireEvent.click(screen.getByRole('button',{name:'Generate and verify'}));
+  fireEvent.click(screen.getByRole('button',{name:'Redesign + QA'}));
   await waitFor(()=>expect(finish).toBeDefined());
   expect(screen.getByRole('button',{name:'Next slide'})).toBeDisabled();
   expect(screen.getByRole('button',{name:'Previous slide'})).toBeDisabled();
   finish(await response({generation:reviewGeneration}));
   await waitFor(()=>expect(screen.getByRole('button',{name:'Next slide'})).toBeEnabled());
+});
+
+
+test('mandatory QA findings cannot be manually approved',async()=>{
+  const generation={...reviewGeneration, findings:reviewGeneration.findings.map(f=>({...f,can_approve:false}))};
+  vi.stubGlobal('fetch',vi.fn(()=>response({...reviewSession,generation})));render(<App/>);
+  expect(await screen.findByLabelText('Select finding: Title fit on first page')).toBeDisabled();
+  expect(screen.queryByRole('button',{name:/Approve selected/})).not.toBeInTheDocument();
+  expect(screen.getAllByText('QA must pass after repair. Manual approval cannot clear this finding.').length).toBeGreaterThan(0);
 });

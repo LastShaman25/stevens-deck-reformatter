@@ -15,7 +15,7 @@ export function FindingsList({findings, resolved, busy, onApprove, deckWide=fals
   const [selected, setSelected] = useState<string[]>([]);
   const [rationale, setRationale] = useState('');
   const selectAll = useRef<HTMLInputElement>(null);
-  const eligible = findings.filter(f => f.severity === 'review' && !resolved.has(f.id));
+  const eligible = findings.filter(f => f.severity === 'review' && f.can_approve !== false && !resolved.has(f.id));
   const selectedIds = eligible.filter(f => selected.includes(f.id)).map(f => f.id);
   const allSelected = eligible.length > 0 && selectedIds.length === eligible.length;
   useEffect(() => {
@@ -39,7 +39,7 @@ export function FindingsList({findings, resolved, busy, onApprove, deckWide=fals
       <ul aria-label={deckWide ? 'Deck-wide findings list' : 'Findings for this page'} className="mt-3 max-h-[28rem] divide-y overflow-y-auto rounded-lg border border-stevens-lightgray">
         {findings.map(f => {
           const approved = resolved.has(f.id);
-          const reviewable = f.severity === 'review' && !approved;
+          const reviewable = f.severity === 'review' && f.can_approve !== false && !approved;
           return <li key={f.id} className="flex items-start gap-3 p-3 text-sm">
             <input type="checkbox" className="mt-1 h-4 w-4 shrink-0 accent-stevens-red"
               aria-label={`${approved ? 'Approved' : 'Select'} finding: ${f.message}`} checked={approved || selectedIds.includes(f.id)}
@@ -50,8 +50,8 @@ export function FindingsList({findings, resolved, busy, onApprove, deckWide=fals
                 {approved ? 'Approved' : f.severity === 'review' ? 'Needs review' : f.severity === 'blocking' ? 'Blocking' : 'AI check pending'}
               </span></div>
               <p className="mt-1 break-words">{f.message}</p>
-              {!approved && f.severity !== 'review' && <p className="mt-1 text-xs text-stevens-gray">
-                {f.severity === 'optional_pending' ? 'Rerun or deselect the optional AI check.' : 'Repair and regenerate to resolve this finding.'}
+              {!approved && (f.severity !== 'review' || f.can_approve === false) && <p className="mt-1 text-xs text-stevens-gray">
+                {f.can_approve === false ? 'QA must pass after repair. Manual approval cannot clear this finding.' : f.severity === 'optional_pending' ? 'Rerun or deselect the optional AI check.' : 'Repair and regenerate to resolve this finding.'}
               </p>}
             </div>
           </li>;

@@ -58,7 +58,10 @@ def repair(source, candidate, report, max_cycles=3):
                     changes.append({'output_slide':si,'shape':marker(shape),'root':root,'old_height':shape.height,'new_height':height})
                     shape.height=height
         for si,slide in enumerate(prs.slides):
-            reflow(slide.shapes,si,int(prs.slide_height-Inches(.4)))
+            from . import template_policy as T
+            # Cover text has dedicated placeholder regions; AI handles any overflow.
+            if T.is_cover(slide) or T.is_preserved(slide): continue
+            reflow(slide.shapes,si,int(Inches(T.CONTENT[1]+T.CONTENT[3])))
         if not changes:break
         proposed=Path(candidate).with_name(f'repair-{cycle}.pptx')
         prs.save(proposed)

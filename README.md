@@ -1,8 +1,8 @@
 # Stevens Slide Studio
 
-A local FastAPI + React application that uses AI to redesign supported PowerPoint objects on the shipped Stevens template, then verifies content and rendered output before offering a final download. New presentations can also be authored from a topic, outline, or PDF. Final release requires ordered AI output QA in every workflow; offline runs can produce unverified drafts.
+A local FastAPI + React application that uses AI to redesign supported PowerPoint objects on the shipped Stevens template, then verifies content and rendered output before offering a final download. New presentations can also be authored from a topic, outline, or PDF. Final release requires ordered AI output QA in every workflow; offline runs cannot release downloadable output.
 
-Sign in → choose Use my PowerPoint or Generate a new presentation → review/approve → generate and verify → inspect findings → download and finish. An explicit **unverified draft** remains available when a candidate exists but has not passed the release gate.
+Sign in → choose Use my PowerPoint or Generate a new presentation → review/approve → generate and verify → inspect findings → download and finish. All downloads remain blocked until required QA completes and findings are resolved. There is no draft-download bypass.
 
 ## Project layout
 
@@ -46,7 +46,7 @@ Missing content, unsupported required objects, failed checks, or changed files b
 - Native text, images/crops, tables (including merges), groups, connectors, standard editable charts and workbook dependencies, speaker notes, and external/internal hyperlinks are preserved and independently checked. Column, line, and pie charts have regression fixtures.
 - Source runs retain emphasis; supported inherited properties and source theme colors are materialized. Arial, title size, minimum body size, and approved red/neutral text rules are applied. The current builder favors native preservation over reconstructing arbitrary diagrams.
 - A single text body can split at paragraph boundaries. A table with its title can split at row boundaries with a repeated header, provided no vertical merge crosses the split. Notes remain on the first output slide; internal links target the first mapped output slide.
-- Preservation reflow is bounded to three measured attempts and rolls back regressions. AI mode adds model-proposed geometry, font sizing, and approved text colors, followed by one repair pass in the UI (API permits zero to two). Free-text notes guide AI layout/style decisions; the model cannot rewrite source wording, add/remove objects, alter chart data, or change links/notes. Arbitrary mixed-layout and single-paragraph overflow are not guaranteed to be solved.
+- Preservation reflow is bounded to three measured attempts and rolls back regressions. AI mode adds model-proposed geometry, font sizing, and approved text colors, followed by mandatory final-QA repair cycles while the candidate improves and upload budget/time remain. The legacy zero-to-two initial repair setting cannot disable final QA. Free-text notes guide AI layout/style decisions; the model cannot rewrite source wording, add/remove objects, alter chart data, or change links/notes. Arbitrary mixed-layout and single-paragraph overflow are not guaranteed to be solved.
 - Source artwork and institutional logos are retained conservatively, which can duplicate template decoration. Complex layouts, chart typography, color semantics, gradients, table-style inheritance, and overlapping objects may require manual review. This is not full accessibility certification or a promise that arbitrary decks need no manual layout work.
 - SmartArt, OLE/embedded objects, media, animations, unsupported graphic frames, and image slide backgrounds are explicitly blocked. Generated slide-number fields have a narrow, recorded template-policy exclusion; ordinary dates, citations, footnotes, and repeated text do not.
 
@@ -58,21 +58,22 @@ Create `backend/.env` from `.env.example` if it does not exist. Enter `OPENAI_AP
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-6-luna
 OPENAI_REASONING_EFFORT=none
+OPENAI_REVIEW_REASONING_EFFORT=low
 STEVENS_AI_PLANNER=openai
 STEVENS_AI_REVIEWER=openai
 ```
 
-`none` avoids a hidden reasoning budget for development checks; the model still receives the full object inventory and high-detail slide images. Responses use strict JSON schemas, bounded output tokens, standard service tier, and `store=false`. API failures and refusals block verification; no automatic provider or model fallback occurs.
+Planning defaults to `none`; visual/logo and ordered QA default to `low`, after live checks exposed false logo-identity judgments at `none`. `OPENAI_REVIEW_REASONING_EFFORT` overrides reviewer effort separately; higher explicit global effort is preserved when that override is absent. The model remains GPT-6 Luna. Low reasoning uses additional output tokens; the model still receives the full object inventory and high-detail slide images. Responses use strict JSON schemas, bounded output tokens, standard service tier, and `store=false`. API failures and refusals block verification; no automatic provider or model fallback occurs. [Official model settings](https://developers.openai.com/api/docs/models/gpt-6-luna).
 
 One OpenAI key supplies both roles, in separate calls. The UI states that the same provider performs planning and review. The Anthropic and Gemini adapters remain available only when selected through `STEVENS_AI_PLANNER` / `STEVENS_AI_REVIEWER`. Supported choices are `openai`, `anthropic`, `gemini`, and `auto`; explicit `auto` prefers a configured OpenAI key, then legacy providers. Nonempty process environment settings override `.env`. Use **Refresh AI configuration** after editing the file; a server restart is unnecessary for key changes.
 
 Select **AI redesign + full check**, then **Generate and verify**. This sends slide text, layout instructions, original previews when available, and generated slide images to the displayed providers. Invalid responses, quota/authentication failures, missing required checks, and content damage block AI verification. Repairs are accepted only when the combined checks improve without increasing deterministic blocking defects. Source words, emphasis, editable objects, charts, links, and notes are independently checked after edits. Visual AI judgment can still be wrong; unresolved review findings need inspection.
 
-`STEVENS_AI_MAX_CALLS=160` and `STEVENS_AI_MAX_TOKENS=500000` bound provider use per processing job; request timeouts also apply. There is no automatic model escalation or benchmark learning. `STEVENS_OFFLINE=1` disables providers. Native preservation itself needs no model, but verified release now requires the configured output-QA reviewer. Offline or unavailable reviewers leave the candidate unverified. The old atom-reconstruction Claude planner is not used by the new native-object AI pipeline.
+Uploaded presentations have one workflow: **Redesign + QA**. Every generation runs AI redesign and mandatory visual/output QA; there is no mode selector or optional per-slide QA checkbox. The public generation API defaults to `ai` and rejects `preserve`. `STEVENS_AI_MAX_CALLS=160` and `STEVENS_AI_MAX_TOKENS=500000` bound provider use per processing job; request timeouts also apply. There is no automatic model escalation or benchmark learning. `STEVENS_OFFLINE=1` disables providers. Offline or unavailable providers block verified release. Native preservation remains an internal composition and testing component. The old atom-reconstruction Claude planner is not used by the new native-object AI pipeline.
 
 Processing workspaces expire after one hour without meaningful user activity and at an absolute four-hour deadline. Polling does not keep files alive. Finish/cancel/logout and account deactivation revoke access and request deletion; active operations hold file leases until their bounded work returns. Failed filesystem deletions remain pending and are retried. Startup reconciles orphaned workspaces, respecting another live process's ownership. Account metadata stays outside the repository by default, separately from temporary presentation content. The renderer uses job-scoped temporary directories; operating-system/Office recovery caches are outside the application's deletion guarantee. No application timer can erase a powered-off machine's disk.
 
-**Download and finish** retrieves the bytes before asking the server to delete the job. Interrupted or draft downloads have a ten-minute retry window within the absolute deadline. Downloads retained on the user's device are not deleted. `store=false` does not establish zero provider-side retention; see OpenAI's data controls. Explicit verification-tool evidence is synthetic development material in ignored `.local/verification`, not product retention.
+**Download and finish** retrieves the bytes before asking the server to delete the job. Interrupted verified downloads have a ten-minute retry window within the absolute deadline. Downloads retained on the user's device are not deleted. `store=false` does not establish zero provider-side retention; see OpenAI's data controls. Explicit verification-tool evidence is synthetic development material in ignored `.local/verification`, not product retention.
 
 ## Accounts and new-deck generation
 
@@ -145,3 +146,15 @@ Brand constants are in `app/brand.py`: they follow the shipped template theme ra
 The root `.gitignore` excludes `.env` files at every depth, local overrides, private decks, `.local`, dependencies, caches and build output. Only the empty `backend/.env.example` is intended for source control. Keep your API key in `backend/.env`; it is loaded by the backend and never bundled into the frontend.
 
 The repository uses the `main` branch. Configure your own `origin` remote before pushing. `git check-ignore -v backend/.env` should report the ignore rule. Do not force-add ignored credentials. If importing existing history, check that it never tracked a key; ignore rules do not remove past commits.
+
+
+### PDF redesign and export
+
+Use **Use my PowerPoint or PDF** for content-preserving redesign. Text-based PDFs (up to 100 pages and 60 MB upload size) become editable text plus source graphic regions; plots and equations retain their visual content. Rasterized graphics are not editable chart data. Scanned pages require OCR first; interactive forms and annotations must be flattened. Original page screenshots are used for paired QA. Verified PowerPoint and PDF downloads share the same release gate. Either verified download finishes the session. Draft downloads are disabled; legacy `draft=true` requests enforce the identical release gate.
+
+AI transport failures and malformed response JSON retry once, with a configurable `STEVENS_AI_REQUEST_TIMEOUT` (default 180 seconds, maximum 300). Existing call/token limits apply cumulatively to the upload, including retries and output QA. The UI reports these totals. A failed redesign stops downstream AI review. Validated source decisions are cached only in the temporary processing session and invalidated by source, instructions, model configuration, policy or repair feedback.
+
+Run `python tools/verify_pdf_redesign.py --live --output .local/verification/pdf-live-new` for an opt-in synthetic PDF -> AI redesign -> PowerPoint render -> full QA check; it incurs configured API usage and never reads private course files.
+
+
+Mandatory redesign QA: every per-slide visual and ordered-deck QA check must explicitly pass. Human approvals cannot waive QA findings. Targeted repair repeats with a new full QA run while results improve and upload budget/time remain; unresolved or stalled work stays blocked. Initial PDF composition preserves font proportions instead of forcing a minimum size into unchanged line boxes. The native first-page layout and extracted title are independently checked.

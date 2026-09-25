@@ -28,6 +28,7 @@ export interface AIConfiguration {
 }
 
 export interface SessionInfo {
+  preview_generation?: Generation | null;
   generation?: Generation | null;
   revision_version?: number;
   session_id: string;
@@ -100,6 +101,7 @@ export interface BenchmarkResult {
 export type Step = "upload" | "review" | "generate" | "download";
 
 export interface Finding {
+  can_approve?: boolean;
   affected_slides?: number[];
   id: string;
   code: string;
@@ -112,8 +114,14 @@ export interface Finding {
 }
 
 export interface Generation {
+  source_decisions?: Record<string,{action:'redesign'|'keep_original';reason:string;removed_artwork:number;extracted_logos?:number}>;
+  output_qa_repairs?: {attempt: number; targets: number[]; accepted: boolean; reason?: string}[];
+  repair_stop_reason?: string | null;
   mode?: 'preserve' | 'ai';
   progress?: {stage: string; output_slide?: number; attempt?: number; completed_calls?: number; max_calls?: number; reviewed_slides?:number; total_slides?:number};
+  pdf_available?: boolean;
+  download_allowed?: boolean;
+  usage?: {upload_requests: number; upload_tokens: number};
   ai_pipeline?: {status: string; changed_objects: number; completed_calls?: number; configuration: AIConfiguration;
     calls: {role: string; provider?: string; model?: string; status: string; message?: string}[];
     attempts: {attempt: number; accepted: boolean; changed_objects?: number; reason?: string}[]} | null;

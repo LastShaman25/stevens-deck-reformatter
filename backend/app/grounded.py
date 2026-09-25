@@ -560,9 +560,9 @@ def _legacy_build_deck(src_path, out_path, template_path=TEMPLATE_PATH,
 
 
 def build_deck(src_path, out_path, template_path=TEMPLATE_PATH,
-               orig_pdf=None, use_vision=False, revisions=None, use_llm=False):
+               orig_pdf=None, use_vision=False, revisions=None, use_llm=False,source_decisions=None):
     """Build an explicitly inventoried native candidate; release requires QA."""
     from slide_engine.preserve import build as preserve_build
     from slide_engine.repair import repair
-    report = preserve_build(src_path, out_path, template_path, revisions)
+    report = preserve_build(src_path, out_path, template_path, revisions,source_decisions)
     return repair(src_path, out_path, report)

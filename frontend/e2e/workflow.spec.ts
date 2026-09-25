@@ -15,22 +15,30 @@ test.afterEach(async({page})=>{
   if(auth.user)await page.request.post('/api/auth/logout',{headers:{'X-CSRF-Token':auth.csrf},data:{}});
 });
 
-test('offline QA blocks verified release, preserves draft bytes and deletes on finish',async({page})=>{
+async function generateOffline(page: import('@playwright/test').Page) {
+  const auth=await (await page.request.get('/api/auth/status')).json();
+  const sid=new URL(page.url()).searchParams.get('session');
+  const response=await page.request.post(`/api/sessions/${sid}/generate`,{
+    headers:{'X-CSRF-Token':auth.csrf},data:{mode:'ai',repair_passes:0}});
+  expect(response.ok()).toBeTruthy();
+  const generation=(await response.json()).generation;
+  await page.reload();
+  return generation;
+}
+
+test('offline QA blocks all downloads and deletes on finish',async({page})=>{
   await page.locator('input[type=file]').setInputFiles(fixture);
-  await expect(page.getByRole('button',{name:'Generate and verify'})).toBeVisible({timeout:90000});
-  await page.getByLabel('Generation mode',{exact:true}).selectOption('preserve');
-  const pending=page.waitForResponse(r=>r.url().endsWith('/generate'));
-  await page.getByRole('button',{name:'Generate and verify'}).click();
-  const result=(await (await pending).json()).generation;
-  expect(result.checks.output_qa_coverage.status).toBe('error');
+  await expect(page.getByRole('button',{name:'Redesign + QA'})).toBeVisible({timeout:90000});
+  const result=await generateOffline(page);
+  expect(result.checks.output_qa_coverage.status).toBe('not_run');
   await expect(page.getByRole('button',{name:'Download verified PowerPoint and finish'})).toBeDisabled();
   const sid=new URL(page.url()).searchParams.get('session');
   expect((await page.request.get(`/api/sessions/${sid}/download?generation_id=${result.generation_id}`)).status()).toBe(409);
-  const downloaded=page.waitForEvent('download');
-  await page.getByRole('button',{name:'Download unverified draft'}).click();
-  const file=await downloaded;
-  const fs=await import('node:fs');const crypto=await import('node:crypto');
-  expect(crypto.createHash('sha256').update(fs.readFileSync((await file.path())!)).digest('hex')).toBe(result.candidate_sha256);
+  await expect(page.getByRole('button',{name:'Download verified PDF and finish'})).toBeDisabled();
+  await expect(page.getByRole('button',{name:'Download unverified draft'})).toHaveCount(0);
+  for (const format of ['pptx','pdf']) {
+    expect((await page.request.get(`/api/sessions/${sid}/download?generation_id=${result.generation_id}&draft=true&format=${format}`)).status()).toBe(409);
+  }
   await page.getByRole('button',{name:'Next slide',exact:true}).click();
   await expect(page.getByLabel('Source slide',{exact:true})).toHaveValue('1');
   await page.getByRole('button',{name:'Finish and delete'}).click();
@@ -40,24 +48,22 @@ test('offline QA blocks verified release, preserves draft bytes and deletes on f
 
 test('revision save error stays visible and blocks generation',async({page})=>{
   await page.locator('input[type=file]').setInputFiles(fixture);
-  await expect(page.getByRole('button',{name:'Generate and verify'})).toBeVisible({timeout:90000});
-  await page.getByLabel('Generation mode',{exact:true}).selectOption('preserve');
+  await expect(page.getByRole('button',{name:'Redesign + QA'})).toBeVisible({timeout:90000});
   let generated=false;page.on('request',r=>{if(r.url().endsWith('/generate'))generated=true;});
   await page.route('**/slides/0/revise',route=>route.fulfill({status:500,contentType:'application/json',body:JSON.stringify({detail:'Injected save failure'})}));
   await page.getByLabel('Reviewer note',{exact:true}).fill('Cannot lose this revision');
-  await page.getByRole('button',{name:'Generate and verify'}).click();
+  await page.getByRole('button',{name:'Save revision'}).click();
   await expect(page.getByRole('alert')).toContainText('Injected save failure');
   expect(generated).toBe(false);
 });
 
 test('split mapping survives resume and old previews cannot authorize a new revision',async({page})=>{
   await page.locator('input[type=file]').setInputFiles(fixture);
-  await expect(page.getByRole('button',{name:'Generate and verify'})).toBeVisible({timeout:90000});
-  await page.getByLabel('Generation mode',{exact:true}).selectOption('preserve');
+  await expect(page.getByRole('button',{name:'Redesign + QA'})).toBeVisible({timeout:90000});
   await page.getByRole('button',{name:'Split slide',exact:true}).click();
-  const pending=page.waitForResponse(r=>r.url().endsWith('/generate'));
-  await page.getByRole('button',{name:'Generate and verify'}).click();
-  const generation=(await (await pending).json()).generation;
+  await page.getByRole('button',{name:'Save revision'}).click();
+  await expect(page.getByRole('status').filter({hasText:'Revision saved'})).toBeVisible();
+  const generation=await generateOffline(page);
   expect(generation.source_to_output_slides['0']).toHaveLength(2);
   await expect(page.getByLabel('Output part',{exact:true})).toBeVisible();
   await page.getByLabel('Output part',{exact:true}).selectOption(String(generation.source_to_output_slides['0'][1]));

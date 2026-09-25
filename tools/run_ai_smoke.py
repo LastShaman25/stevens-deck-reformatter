@@ -11,7 +11,7 @@ sys.path[:0]=[str(ROOT),str(ROOT/'backend')]
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from app import generations, grounded, rendering, sessions
-from app.ai import providers
+from app.ai import providers, rubric
 
 
 def main():
@@ -29,14 +29,28 @@ def main():
         config={'configured':True,'independent_providers':False,
                 **{role:{'provider':'mock','model':'synthetic-test','configured':True} for role in ('planner','reviewer')}}
         providers.capabilities=lambda:config
+        def checks():return [{'criterion':c,'status':'passed','evidence':'Simulated contract check, not visual evidence.'} for c in rubric.CRITERIA]
         def mock(role,system,payload,images=(),max_tokens=0):
             if role=='output_qa':
-                data={'reviewed':payload['expected'],'summary':'Simulated ordered review; not live quality evidence','findings':[]}
+                data={'reviewed':payload['expected'],'summary':'Simulated ordered review; not live quality evidence','findings':[],
+                      'slide_audits':[] if payload['stage']=='deck_synthesis' else [{'ordinal':i,'checks':checks()} for i in payload['expected']]}
+            elif role=='element_roles':
+                data={'slide_purpose':'Synthetic inventory', 'elements':[{'id':o['id'],'role':'unknown',
+                    'related_ids':[],'alignment':'uncertain','alignment_reference':'none','confidence':'low',
+                    'reason':'Synthetic classification, not semantic evidence.'} for o in payload['objects']]}
+                if payload.get('stage')=='source_decisions':
+                    data.update(slide_kind='cover' if payload['source_slide']==0 else 'content',
+                                action='redesign',matches_template=False,reason='Synthetic source decision.',remove_ids=[])
+                    text=[o for o in payload['objects'] if o.get('origin')=='slide' and o.get('content')]
+                    for entry in data['elements']:
+                        if any(o['id']==entry['id'] for o in text):
+                            entry['role']='title' if entry['id']==text[0]['id'] else 'subtitle'
             elif role=='planner':
                 objects=[{'id':o['id'],**dict(zip(('x','y','w','h'),o['box']))} for o in payload['objects']]
-                for obj in objects:obj['x']+=.04
+                for obj in objects:
+                    obj['x']+=.04; obj['w']-=.04
                 data={'layout':'Synthetic horizontal shift','rationale':'Exercise native edits without live AI','objects':objects}
-            else:data={'verdict':'passed','summary':'Simulated review; not evidence of live model quality','findings':[]}
+            else:data={'verdict':'passed','summary':'Simulated review; not evidence of live model quality','findings':[],'rubric':checks()}
             return {'status':'completed','provider':'mock','model':'synthetic-test','data':data}
         providers.generate=mock
     s=sessions.create()
