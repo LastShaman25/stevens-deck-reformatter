@@ -12,7 +12,7 @@ from slide_engine.preserve import CoverageError
 from . import grounded
 from .qa import artifact_coverage, brand_lint, render_verify
 
-POLICY_VERSION = 'preservation-ai-3'
+POLICY_VERSION = 'owned-authoring-ordered-qa-4'
 REQUIRED = ('plan_coverage', 'artifact_coverage', 'structural_formatting', 'render_verification')
 
 
@@ -38,7 +38,9 @@ class Decision(BaseModel):
 
 
 def settle(record):
-    required=REQUIRED + (('ai_redesign','ai_visual_review') if record.get('mode')=='ai' else ())
+    from .ai.output_qa import CHECKS
+    required=REQUIRED + CHECKS + ('output_qa_visual',) + (('ai_redesign','ai_visual_review') if record.get('mode')=='ai' else ())
+    if record.get('mode') == 'author': required += ('content_grounding',)
     states = [record['checks'].get(k, {}).get('status', 'not_run') for k in required]
     if any(s == 'failed' for s in states):
         record['state'] = 'failed'
@@ -117,6 +119,14 @@ def build(sess, mode='preserve', repair_passes=1):
                     'message': f'{name} could not complete: {type(exc).__name__}: {exc}', 'severity': 'blocking'}]})
         for name in ('ai_redesign','ai_visual_review'):
             if name in ai_checks:add_check(record,name,ai_checks[name])
+        from .ai import output_qa
+        evidence = {'source_slides': [{'ordinal': i+1, 'text':'\n'.join(s.text for s in slide.shapes if s.has_text_frame),
+                    'tables':[[[c.text for c in row.cells] for row in s.table.rows] for s in slide.shapes if s.has_table],
+                    'charts':[{'series':[{'name':series.name,'values':list(series.values)} for series in s.chart.series]} for s in slide.shapes if s.has_chart],
+                    'notes':slide.notes_slide.notes_text_frame.text if slide.has_notes_slide else ''}
+                    for i, slide in enumerate(__import__('pptx').Presentation(sess.source_path).slides)],
+                    'source_to_output_slides':record['source_to_output_slides']}
+        for name, result in output_qa.run(sess, record, evidence).items(): add_check(record, name, result)
     except CoverageError as exc:
         add_check(record, 'plan_coverage', exc.report)
     except Exception as exc:
@@ -139,6 +149,7 @@ def structural(candidate):
 
 
 def verify_identity(sess, record, ready=True):
+    sess.ensure_active()
     if not record or (ready and record['state'] != 'ready'):
         raise ValueError('GENERATION_NOT_READY')
     if record['revision_version'] != sess.revision_version:
@@ -149,6 +160,17 @@ def verify_identity(sess, record, ready=True):
         raise ValueError('SOURCE_CHANGED')
     if not Path(record['candidate']).is_file() or sha256(record['candidate']) != record['candidate_sha256']:
         raise ValueError('ARTIFACT_CHANGED')
+    if record.get('mode') == 'author':
+        from .authoring.service import hash_json
+        if record.get('outline_hash') != sess.creation['approved_hash'] or record.get('content_hash') != hash_json(sess.creation['deck']):
+            raise ValueError('AUTHORED_CONTENT_CHANGED')
+    if ready:
+        from .ai.output_qa import CHECKS
+        if any(record['checks'].get(name, {}).get('status') not in ('passed','needs_review') for name in CHECKS):
+            raise ValueError('OUTPUT_QA_INCOMPLETE')
+        for item in record.get('output_manifest', []):
+            if not Path(item['image']).is_file() or sha256(item['image']) != item['sha256']:
+                raise ValueError('RENDERED_ARTIFACT_CHANGED')
 
 
 def decide(sess, decision):

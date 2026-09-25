@@ -48,7 +48,7 @@ def test_required_verifier_crash_blocks_final(sess,monkeypatch):
     client=TestClient(app);base=f'/api/sessions/{sess.id}'
     assert client.get(base+'/download',params={'generation_id':r['generation_id']}).status_code==409
     assert client.get(base+'/download',params={'generation_id':r['generation_id'],'draft':True}).status_code==200
-    assert client.post(base+'/benchmark',json={'generation_id':r['generation_id']}).status_code==409
+    assert client.post(base+'/benchmark',json={'generation_id':r['generation_id']}).status_code==410
     with pytest.raises(ValueError):
         generations.decide(sess,generations.Decision(generation_id=r['generation_id'],candidate_sha256=r['candidate_sha256'],finding_ids=[r['findings'][-1]['id']],rationale='Cannot override'))
 
@@ -71,9 +71,11 @@ def test_active_job_not_expired_or_deleted(sess):
         sess.touched-=sessions.TTL_SECONDS+1
         sessions.sweep()
         assert sessions.get(sess.id) is sess
-        with pytest.raises(ValueError):sessions.delete(sess.id)
+        assert sessions.delete(sess.id) is False
+        assert sessions.get(sess.id) is None
         with pytest.raises(ValueError):
             with sessions.job(sess):pass
+    assert not Path(sess.dir).exists()
 
 
 @pytest.mark.parametrize('fault,status',[(requests.Timeout(),'timeout'),(requests.HTTPError(),'provider_error'),(ValueError(),'invalid_response')])

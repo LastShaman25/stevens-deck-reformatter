@@ -100,6 +100,7 @@ export interface BenchmarkResult {
 export type Step = "upload" | "review" | "generate" | "download";
 
 export interface Finding {
+  affected_slides?: number[];
   id: string;
   code: string;
   message: string;
@@ -112,7 +113,7 @@ export interface Finding {
 
 export interface Generation {
   mode?: 'preserve' | 'ai';
-  progress?: {stage: string; output_slide?: number; attempt?: number; completed_calls?: number; max_calls?: number};
+  progress?: {stage: string; output_slide?: number; attempt?: number; completed_calls?: number; max_calls?: number; reviewed_slides?:number; total_slides?:number};
   ai_pipeline?: {status: string; changed_objects: number; completed_calls?: number; configuration: AIConfiguration;
     calls: {role: string; provider?: string; model?: string; status: string; message?: string}[];
     attempts: {attempt: number; accepted: boolean; changed_objects?: number; reason?: string}[]} | null;

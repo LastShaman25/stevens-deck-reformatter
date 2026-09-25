@@ -30,7 +30,9 @@ def main():
                 **{role:{'provider':'mock','model':'synthetic-test','configured':True} for role in ('planner','reviewer')}}
         providers.capabilities=lambda:config
         def mock(role,system,payload,images=(),max_tokens=0):
-            if role=='planner':
+            if role=='output_qa':
+                data={'reviewed':payload['expected'],'summary':'Simulated ordered review; not live quality evidence','findings':[]}
+            elif role=='planner':
                 objects=[{'id':o['id'],**dict(zip(('x','y','w','h'),o['box']))} for o in payload['objects']]
                 for obj in objects:obj['x']+=.04
                 data={'layout':'Synthetic horizontal shift','rationale':'Exercise native edits without live AI','objects':objects}

@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse, Response
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, ConfigDict
 from pptx import Presentation
-from . import sessions, grounded, rendering, generations, benchmark
+from . import sessions, grounded, rendering, generations
 from .ai import providers, optional_review
 
 router = APIRouter(prefix='/api')
@@ -34,7 +34,8 @@ def capabilities():
 
 
 def info(sess):
-    return {'session_id': sess.id, 'name': sess.original_name, **sess.analysis,
+    return {'session_id': sess.id, 'name': sess.original_name, 'expires_at': sess.expires,
+            'workflow': sess.workflow, **sess.analysis,
             'capabilities': capabilities(), 'revisions': sess.revisions,
             'revision_version': sess.revision_version, 'generation': generations.public(sess.generation),
             'ai_check': sorted(sess.ai_check), 'ai_results': sess.ai_results, 'benchmarked': sess.benchmarked,
@@ -62,9 +63,16 @@ def analyze_upload(filename, data):
         with sessions.job(sess):
             sess.original_name = os.path.basename(filename)
             Path(sess.source_path).write_bytes(data)
+            import zipfile
+            with zipfile.ZipFile(sess.source_path) as archive:
+                entries = archive.infolist()
+                if len(entries)>20000 or sum(item.file_size for item in entries)>300*1024*1024:
+                    raise ValueError('Expanded presentation exceeds the processing limit.')
             prs = Presentation(sess.source_path)
             if not len(prs.slides):
                 raise ValueError('Presentation contains no slides.')
+            if len(prs.slides)>100:
+                raise ValueError('This processing workflow supports at most 100 source slides.')
             sess.analysis = grounded.analyze(sess.source_path)
             # Source previews are optional. Their absence is visible, never QA evidence.
             try:
@@ -243,6 +251,7 @@ def download(sid: str, draft: bool=False, generation_id: str | None=None):
             if not sess.generation or generation_id != sess.generation['generation_id']:
                 raise ValueError('GENERATION_MISMATCH')
             data = artifact_bytes(sess, ready=not draft)
+            sess.close_after = min(__import__('time').time()+600, sess.expires)
             filename = 'Stevens-unverified-draft.pptx' if draft else 'Stevens-verified.pptx'
             return Response(data, media_type='application/vnd.openxmlformats-officedocument.presentationml.presentation',
                 headers={'Content-Disposition':f'attachment; filename="{filename}"', 'Cache-Control':'no-store'})
@@ -258,17 +267,7 @@ class BenchmarkRequest(BaseModel):
 
 @router.post('/sessions/{sid}/benchmark')
 def send_to_benchmark(sid: str, body: BenchmarkRequest):
-    sess = session(sid)
-    try:
-        with sessions.job(sess):
-            if not sess.generation or sess.generation['generation_id'] != body.generation_id:
-                raise ValueError('GENERATION_MISMATCH')
-            data = artifact_bytes(sess, ready=True)
-            result = benchmark.capture(sess, note=body.note, data=data)
-            sess.benchmarked = True
-            return {'ok':True, 'benchmarked':True, **result}
-    except ValueError as exc:
-        raise HTTPException(409, str(exc))
+    raise HTTPException(410, 'Permanent benchmark capture is disabled. Files are used only for processing.')
 
 
 @router.delete('/sessions/{sid}')
@@ -277,3 +276,8 @@ def purge(sid: str):
         return {'deleted': sessions.delete(sid)}
     except ValueError as exc:
         raise HTTPException(409, str(exc))
+
+
+@router.post('/sessions/{sid}/finalize')
+def finalize(sid: str):
+    return {'deleted': sessions.delete(sid)}

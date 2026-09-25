@@ -170,4 +170,6 @@ def test_parallel_previews_do_not_conflict(sess,tmp_path):
         response=TestClient(app).get(f'/api/sessions/{sess.id}/slides/0/preview?variant=before')
         assert response.status_code==200
         assert response.content==b'png'
-        with pytest.raises(ValueError):sessions.delete(sess.id)
+        assert sessions.delete(sess.id) is False
+        assert Path(sess.dir).exists()
+    assert not Path(sess.dir).exists()

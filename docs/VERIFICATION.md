@@ -1,5 +1,7 @@
 # Verification checkpoints
 
+For the current invitation accounts, authoring, cleanup, math/plots and ordered screenshot QA build, see [implementation verification](IMPLEMENTATION_VERIFICATION.md). The live results below are historical preservation-pipeline evidence. Use `powershell -NoProfile -File tools/verify.ps1` for the current automated suite.
+
 1. Run backend regression tests, including the two actual-renderer checks. These cover preservation, exported content, release gating, AI request/response handling and failure paths. Provider calls are mocked; passing does not establish live model quality.
 2. Run frontend component tests and production build. Generate the synthetic browser fixture and run all browser workflows against the local server.
 3. Check Git's handling of nested `.env` files and local artifacts, then scan files eligible for source control for configured credential values. Only the empty environment example should be publishable.

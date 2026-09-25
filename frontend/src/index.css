@@ -2,6 +2,26 @@
 @tailwind components;
 @tailwind utilities;
 
+.slide-preview-dialog {
+  width: 96vw;
+  max-width: 1800px;
+  max-height: 96dvh;
+  margin: auto;
+  padding: 16px;
+  border: 0;
+  border-radius: 12px;
+  color: #363d45;
+  background: white;
+}
+.slide-preview-dialog::backdrop {
+  background: rgba(15, 23, 42, 0.8);
+}
+.slide-preview-expanded {
+  width: 100%;
+  height: calc(96dvh - 100px);
+  object-fit: contain;
+}
+
 html, body, #root {
   height: 100%;
 }

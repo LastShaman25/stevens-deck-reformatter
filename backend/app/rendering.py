@@ -74,7 +74,7 @@ def pptx_to_pdf(pptx_path, out_dir, soffice=None):
     if pdf.exists():
         raise RuntimeError("Render destination must be fresh")
     flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-    with _RENDER_LOCK, tempfile.TemporaryDirectory(prefix='stevens-render-') as profile:
+    with _RENDER_LOCK, tempfile.TemporaryDirectory(prefix='stevens-render-', dir=out_dir) as profile:
         if info['name'] == 'LibreOffice':
             command = [info['executable'], '--headless',
                        '-env:UserInstallation=' + Path(profile).as_uri(),
@@ -123,7 +123,7 @@ def pptx_to_pdf(pptx_path, out_dir, soffice=None):
 
 def render_to_pdf(pptx_path, pdf_out_path, soffice=None):
     """Render a deck to a specific PDF path (used for vision crops + before/after)."""
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(dir=Path(pdf_out_path).resolve().parent) as tmp:
         pdf = pptx_to_pdf(pptx_path, tmp, soffice=soffice)
         shutil.copyfile(pdf, pdf_out_path)
         shutil.copyfile(Path(pdf).with_suffix(".renderer.json"), Path(pdf_out_path).with_suffix(".renderer.json"))
@@ -158,7 +158,7 @@ def render_deck(pptx_path, out_dir, name_fn=None, dpi=120, soffice=None):
     os.makedirs(out_dir, exist_ok=True)
     zoom = dpi / 72.0
     paths = []
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(dir=out_dir) as tmp:
         pdf = pptx_to_pdf(pptx_path, tmp, soffice=soffice)
         doc = fitz.open(pdf)
         for i in range(doc.page_count):

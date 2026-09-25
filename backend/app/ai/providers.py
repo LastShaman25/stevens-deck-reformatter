@@ -28,7 +28,7 @@ def configured(provider):
 
 
 def role_config(role):
-    explicit=setting('STEVENS_AI_PLANNER' if role=='planner' else 'STEVENS_AI_REVIEWER','openai')
+    explicit=setting('STEVENS_AI_PLANNER' if role in ('planner','outline','author','extractor') else 'STEVENS_AI_REVIEWER','openai')
     preferred=('openai','anthropic','gemini') if role=='planner' else ('openai','gemini','anthropic')
     provider=next((p for p in preferred if configured(p)),preferred[0]) if explicit=='auto' else explicit
     if provider not in PROVIDERS:
@@ -62,6 +62,18 @@ def strict_schema(value):
 
 
 def generate(role, system, payload, images=(), max_tokens=16000):
+    from ..sessions import active_session
+    sess = active_session.get()
+    if sess:
+        try:
+            sess.ensure_active()
+            limit = int(setting('STEVENS_AI_MAX_CALLS', '160'))
+            reserve = 8 if role != 'output_qa' else 0
+            if sess.calls >= limit-reserve or sess.tokens >= int(setting('STEVENS_AI_MAX_TOKENS', '500000')):
+                return {'status':'budget_exceeded', 'message':'Processing budget exhausted; verification cannot be skipped.'}
+            sess.calls += 1
+        except ValueError:
+            return {'status':'cancelled', 'message':'Processing was cancelled or expired.'}
     config=role_config(role)
     base={'provider':config['provider'],'model':config['model']}
     if not config['configured']:
@@ -136,6 +148,10 @@ def generate(role, system, payload, images=(), max_tokens=16000):
             output=''.join(p.get('text','') for p in candidate['content']['parts'] if not p.get('thought'))
             usage=data.get('usageMetadata',{})
         usage={k:v for k,v in usage.items() if isinstance(v,(int,float)) and not isinstance(v,bool)}
+        if sess:
+            sess.ensure_active()
+            sess.tokens += int(usage.get('total_tokens') or usage.get('totalTokenCount') or
+                               (usage.get('input_tokens', 0)+usage.get('output_tokens', 0)))
         return {**base,'status':'completed','data':_parse(output),'usage':usage}
     except requests.Timeout:
         return {**base,'status':'timeout','message':'AI request exceeded its time limit.'}

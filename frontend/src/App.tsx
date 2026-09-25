@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { UploadStep } from "./steps/UploadStep";
 import { FindingsList, findingSource } from './components/FindingsList';
 import type { AIConfiguration, Generation, Revision, SessionInfo } from "./types";
+import {apiFetch} from './http';
+import {ExpandablePreview} from './components/ExpandablePreview';
 
 async function request<T>(path: string, body?: unknown, method = "POST"): Promise<T> {
-  const res = await fetch(`/api${path}`, body === undefined ? undefined : {
+  const res = await apiFetch(`/api${path}`, body === undefined ? undefined : {
     method, headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)
   });
   const value = await res.json();
@@ -17,12 +19,12 @@ function Preview({url, label}: {url: string | null; label: string}) {
   const [failed, setFailed] = useState(false);
   useEffect(() => setFailed(false), [url]);
   return <figure className="min-w-0 flex-1"><figcaption className="mb-2 text-xs font-bold text-stevens-gray">{label}</figcaption>
-    {url && !failed ? <img className="w-full rounded border border-stevens-lightgray" src={url} alt={label} onError={() => setFailed(true)} /> :
+    {url && !failed ? <ExpandablePreview className="w-full rounded border border-stevens-lightgray" src={url} alt={label} onError={() => setFailed(true)} /> :
       <div className="grid min-h-48 place-items-center rounded border border-stevens-lightgray bg-white p-5 text-sm text-stevens-gray">Rendered preview unavailable</div>}
   </figure>;
 }
 
-export default function App() {
+export default function App({onHome}: {onHome?:()=>void} = {}) {
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [generation, setGeneration] = useState<Generation | null>(null);
   const [current, setCurrent] = useState(0);
@@ -92,7 +94,7 @@ export default function App() {
     const token = ++scope.current;
     await operation(async () => {
       const data = new FormData(); data.append('file', file);
-      const res = await fetch('/api/sessions', {method:'POST', body:data});
+      const res = await apiFetch('/api/sessions', {method:'POST', body:data});
       const info = await res.json();
       if (!res.ok) throw new Error(info.detail || 'Upload failed');
       if (token !== scope.current) return;
@@ -171,20 +173,13 @@ export default function App() {
   async function download(draft: boolean) {
     if (!session || !generation) return;
     await operation(async () => {
-      const res = await fetch(`/api/sessions/${session.session_id}/download?generation_id=${generation.generation_id}&draft=${draft}`);
+      const res = await apiFetch(`/api/sessions/${session.session_id}/download?generation_id=${generation.generation_id}&draft=${draft}`);
       if (!res.ok) {const err = await res.json(); throw new Error(err.detail);}
       const url = URL.createObjectURL(await res.blob());
       const a = document.createElement('a'); a.href = url;
       a.download = draft ? 'Stevens-unverified-draft.pptx' : 'Stevens-verified.pptx'; a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-    });
-  }
-  async function saveBenchmark() {
-    if (!session || !generation) return;
-    const token = scope.current;
-    await operation(async () => {
-      await request(`/sessions/${session.session_id}/benchmark`, {generation_id:generation.generation_id});
-      if (token === scope.current) setSaved(true);
+      if (!draft) {await request(`/sessions/${session.session_id}/finalize`, {}); await startOver(); onHome?.();}
     });
   }
   async function startOver() {
@@ -194,7 +189,12 @@ export default function App() {
     setNotice(''); setSaved(false); setBusy(false); setCurrent(0); setOutput(0); dirty.current.clear();
     generationPending.current=false;setGenerating(false);setMode(aiConfig?.configured?'ai':'preserve');modeChosen.current=false;
     window.history.replaceState({}, '', window.location.pathname);
-    if (old) await fetch(`/api/sessions/${old.session_id}`, {method:'DELETE'}).catch(() => {});
+    if (old) {
+      try { const response=await apiFetch(`/api/sessions/${old.session_id}`, {method:'DELETE'});
+        if(!response.ok)throw new Error('Could not confirm deletion; retry or sign out.');
+        const value=await response.json();if(value.deleted===false)setNotice('Access revoked. Deletion is pending while the current operation releases its files.');
+      } catch(e){setError((e as Error).message);}
+    }
   }
   function navigateSlide(index: number) {
     if (busy || !session || index < 0 || index >= session.slide_count) return;
@@ -204,15 +204,15 @@ export default function App() {
   const rev = revs[current] ?? empty;
   const resolved = new Set(generation?.human_decisions.flatMap(d => d.finding_ids) ?? []);
   const outputs = generation?.source_to_output_slides[String(current)] ?? [];
-  const pageFindings = generation?.findings.filter(f => f.output_slide != null
+  const pageFindings = generation?.findings.filter(f => f.affected_slides?.length ? f.affected_slides.includes(output) : f.output_slide != null
     ? outputs.includes(output) && f.output_slide === output : findingSource(f) === current) ?? [];
-  const deckFindings = generation?.findings.filter(f => f.output_slide == null && findingSource(f) == null) ?? [];
+  const deckFindings = generation?.findings.filter(f => f.output_slide == null && !f.affected_slides?.length && findingSource(f) == null) ?? [];
   const reviewScope = `${session?.session_id}:${generation?.generation_id}:${generation?.candidate_sha256}`;
   const sid = session?.session_id;
   return <div className="min-h-screen bg-[#f5f7fa] text-stevens-ink">
     <header className="flex items-center justify-between border-b border-stevens-lightgray bg-white px-6 py-4">
       <div><h1 className="text-xl font-extrabold">Stevens Slide Studio</h1><p className="text-xs text-stevens-gray">Preserve content. Verify the exported deck.</p></div>
-      {session && <button className="btn-ghost" onClick={startOver} disabled={busy}>Start a new deck</button>}
+      {session && <button className="btn-ghost" onClick={startOver}>Start a new deck</button>}
     </header>
     <section className="mx-5 mt-4 rounded border border-stevens-lightgray bg-white p-4 text-sm" aria-label="AI configuration">
       <div className="flex flex-wrap items-center gap-3"><b>AI redesign and review</b>
@@ -230,7 +230,7 @@ export default function App() {
         <p className="text-sm text-stevens-gray">{session.slide_count} source slides{generation ? ` → ${generation.built_slides} output slides` : ''}</p></div>
         <div className="flex flex-wrap items-center gap-3"><label>Generation mode <select aria-label="Generation mode" value={mode} disabled={busy} className="ml-2 rounded border p-2" onChange={e=>{
           modeChosen.current=true;setMode(e.target.value as 'ai'|'preserve');setGeneration(null);setSaved(false);
-        }}><option value="ai">AI redesign + full check</option><option value="preserve">Preserve + deterministic check</option></select></label>
+        }}><option value="ai">AI redesign + full check</option><option value="preserve">Preserve + full output QA</option></select></label>
         <button className="btn-red" disabled={busy || (mode==='ai' && !aiConfig?.configured)} onClick={generate}>{busy ? 'Working…' : 'Generate and verify'}</button></div></div>
       <div className="grid gap-5 lg:grid-cols-[1fr_330px]">
         <section className="card p-5">
@@ -270,10 +270,10 @@ export default function App() {
           {generating && generation?.progress && <p role="status" className="mt-2 text-sm">{generation.progress.stage.replace(/_/g,' ')}{generation.progress.output_slide!==undefined ? ` · output slide ${generation.progress.output_slide+1}` : ''}{generation.progress.completed_calls!==undefined ? ` · ${generation.progress.completed_calls} AI calls completed` : ''}</p>}
           {!generation && <p className="mt-2 text-sm text-stevens-gray">Generate a candidate to check content, formatting, and rendered output.</p>}
           {generation && <><ul className="mt-3 space-y-2 text-sm">{Object.entries(generation.checks).map(([name,result]) => <li key={name}><b>{name.replace(/_/g,' ')}</b>: {result.status.replace(/_/g,' ')}</li>)}</ul>
-            <div className="mt-4 flex flex-col gap-2"><button className="btn-red" disabled={busy || generation.state !== 'ready'} onClick={() => download(false)}>Download verified PowerPoint</button>
+            <div className="mt-4 flex flex-col gap-2"><button className="btn-red" disabled={busy || generation.state !== 'ready'} onClick={() => download(false)}>Download verified PowerPoint and finish</button>
               <button className="btn-ghost" disabled={busy || !generation.candidate_sha256} onClick={() => download(true)}>Download unverified draft</button>
-              <button className="btn-ghost" disabled={busy || generation.state !== 'ready' || saved} onClick={saveBenchmark}>{saved ? 'Approved benchmark saved' : 'Save approved benchmark'}</button></div>
-            <p className="mt-2 text-xs text-stevens-gray">Benchmark save is your explicit approval of this ready artifact. Saved benchmarks remain on this computer.</p></>}
+              <button className="btn-ghost" onClick={async()=>{await startOver();onHome?.();}}>Finish and delete</button></div>
+            <p className="mt-2 text-xs text-stevens-gray">Download and finish ends editing and deletes processing files. Draft downloads expire after ten minutes.</p></>}
           {generation?.ai_pipeline && <div className="mt-4 text-sm"><b>AI pipeline: {generation.ai_pipeline.status}</b>
             <p>{generation.ai_pipeline.calls.length} calls · {generation.ai_pipeline.changed_objects} object edits</p>
             {generation.ai_pipeline.attempts.map((a,i)=><p key={i}>Pass {a.attempt+1}: {a.accepted?'accepted':'rejected'}{a.reason?` — ${a.reason}`:''}</p>)}

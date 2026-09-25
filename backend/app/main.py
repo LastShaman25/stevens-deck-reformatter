@@ -12,11 +12,15 @@ from fastapi.staticfiles import StaticFiles
 
 from .api import router
 from . import sessions
+from . import auth
+from .authoring.api import router as authoring_router
+from starlette.middleware.sessions import SessionMiddleware
 from contextlib import asynccontextmanager
 import asyncio
 
 @asynccontextmanager
 async def lifespan(app):
+    sessions.cleanup_orphans(startup=True)
     async def cleanup():
         while True:
             sessions.sweep()
@@ -31,6 +35,8 @@ async def lifespan(app):
             await task
         except asyncio.CancelledError:
             pass
+        for sid in list(sessions._sessions):
+            sessions.delete(sid)
 
 
 app = FastAPI(title="Stevens Slide Studio", version="1.1.0", lifespan=lifespan)
@@ -43,6 +49,11 @@ app.add_middleware(
 )
 
 app.include_router(router)
+app.include_router(auth.router)
+app.include_router(authoring_router)
+app.middleware('http')(auth.guard)
+app.add_middleware(SessionMiddleware, secret_key=auth.cookie_secret(), session_cookie='stevens_oidc',
+                   max_age=600, same_site='lax', https_only=auth.setting('STEVENS_PUBLIC_URL', '').startswith('https://'))
 
 # Serve the built frontend if present (production single-process mode).
 _DIST = os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "frontend", "dist")

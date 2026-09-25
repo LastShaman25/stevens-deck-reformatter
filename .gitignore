@@ -19,6 +19,10 @@ test-results/
 playwright-report/
 *.tsbuildinfo
 *.log
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
 learning/
 # Private presentations and rendered documents
 *.pptx

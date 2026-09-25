@@ -1,8 +1,8 @@
 # Stevens Slide Studio
 
-A local FastAPI + React application that uses AI to redesign supported PowerPoint objects on the shipped Stevens template, then verifies content and rendered output before offering a final download. A preservation-only mode is available without API keys.
+A local FastAPI + React application that uses AI to redesign supported PowerPoint objects on the shipped Stevens template, then verifies content and rendered output before offering a final download. New presentations can also be authored from a topic, outline, or PDF. Final release requires ordered AI output QA in every workflow; offline runs can produce unverified drafts.
 
-Upload → review source → save corrections → generate and verify → inspect findings → download. An explicit **unverified draft** remains available when a candidate exists but has not passed the release gate.
+Sign in → choose Use my PowerPoint or Generate a new presentation → review/approve → generate and verify → inspect findings → download and finish. An explicit **unverified draft** remains available when a candidate exists but has not passed the release gate.
 
 ## Project layout
 
@@ -16,6 +16,8 @@ docs/          Architecture and verification checkpoints
 ```
 
 See [architecture](docs/ARCHITECTURE.md) and [verification checkpoints](docs/VERIFICATION.md). Private decks, past evidence and retained implementation history live in the ignored `.local/` folder. They are not required to run the app.
+
+Current implementation results and limits: [implementation verification](docs/IMPLEMENTATION_VERIFICATION.md). Run the complete local verification with `powershell -NoProfile -File tools/verify.ps1`. After building, `powershell -NoProfile -File tools/start.ps1` starts the application in the background using the project's local API credential.
 
 ## Windows setup
 
@@ -35,7 +37,7 @@ Open http://127.0.0.1:8000. Use one server worker: sessions are process-local. F
 
 ## What verification means
 
-Each generation has a unique directory, source/candidate/template hashes, revision version, policy version, check results, and scoped review decisions. Four required checks cover the placement plan, reopened exported content, structural formatting, and fresh PDF/PNG rendering. AI mode additionally requires a valid AI redesign and a completed visual review of every output slide. Final download and benchmark capture recheck identity on the server and return the exact checked bytes.
+Each generation has a unique directory, source/candidate/template hashes, revision version, policy version, check results, and scoped review decisions. Four required checks cover the placement plan, reopened exported content, structural formatting, and fresh PDF/PNG rendering. AI mode additionally requires a valid AI redesign and a completed visual review of every output slide. A separate output-QA agent reviews every output screenshot in presentation order, followed by deck-wide sequence and source-based accuracy review. Final download rechecks identity and returns the exact checked bytes. Permanent benchmark capture is disabled.
 
 Missing content, unsupported required objects, failed checks, or changed files block final release. Uncertain formatting, chart appearance, inherited table styles, and text visibly extending beyond its intended box require inspection. A reviewer can resolve specific review findings with a rationale; required failures cannot be waived. Optional AI failures are never a clean result.
 
@@ -66,9 +68,29 @@ One OpenAI key supplies both roles, in separate calls. The UI states that the sa
 
 Select **AI redesign + full check**, then **Generate and verify**. This sends slide text, layout instructions, original previews when available, and generated slide images to the displayed providers. Invalid responses, quota/authentication failures, missing required checks, and content damage block AI verification. Repairs are accepted only when the combined checks improve without increasing deterministic blocking defects. Source words, emphasis, editable objects, charts, links, and notes are independently checked after edits. Visual AI judgment can still be wrong; unresolved review findings need inspection.
 
-`STEVENS_AI_MAX_CALLS=160` bounds provider requests per generation; request timeouts also apply. There is no automatic model escalation or benchmark learning. `STEVENS_OFFLINE=1` disables providers. The preservation mode needs no keys; its optional per-slide check uses the configured reviewer, also GPT-6 Luna by default. The old atom-reconstruction Claude planner is not used by the new native-object AI pipeline.
+`STEVENS_AI_MAX_CALLS=160` and `STEVENS_AI_MAX_TOKENS=500000` bound provider use per processing job; request timeouts also apply. There is no automatic model escalation or benchmark learning. `STEVENS_OFFLINE=1` disables providers. Native preservation itself needs no model, but verified release now requires the configured output-QA reviewer. Offline or unavailable reviewers leave the candidate unverified. The old atom-reconstruction Claude planner is not used by the new native-object AI pipeline.
 
-Temporary sessions expire after one idle hour, with active jobs protected. Restarting the single-process server loses session lookup state; expired orphan directories are cleaned on subsequent startup. Start a new deck requests deletion of the old session. Explicitly saved approved benchmarks persist under `backend/learning`; saving does not train or automatically change the builder. There is no benchmark deletion toggle. Detailed verification artifacts contain deck text and should stay local.
+Processing workspaces expire after one hour without meaningful user activity and at an absolute four-hour deadline. Polling does not keep files alive. Finish/cancel/logout and account deactivation revoke access and request deletion; active operations hold file leases until their bounded work returns. Failed filesystem deletions remain pending and are retried. Startup reconciles orphaned workspaces, respecting another live process's ownership. Account metadata stays outside the repository by default, separately from temporary presentation content. The renderer uses job-scoped temporary directories; operating-system/Office recovery caches are outside the application's deletion guarantee. No application timer can erase a powered-off machine's disk.
+
+**Download and finish** retrieves the bytes before asking the server to delete the job. Interrupted or draft downloads have a ten-minute retry window within the absolute deadline. Downloads retained on the user's device are not deleted. `store=false` does not establish zero provider-side retention; see OpenAI's data controls. Explicit verification-tool evidence is synthetic development material in ignored `.local/verification`, not product retention.
+
+## Accounts and new-deck generation
+
+Invitation-code sign-in is enabled by default. On first startup, the administrator code is **admin**, as requested. Open **Manage users** to create separate account-bound codes, change roles, deactivate accounts, replace codes, and remove inactive accounts. Codes are shown once when created; only hashes are stored. Replacing a code revokes that account's existing logins. The last active administrator cannot be removed. Each code should belong to one person; it signs back into that account until revoked. No email or Google credentials are needed for this mode.
+
+`STEVENS_AUTH_DB` optionally sets the account SQLite path; the default is `%LOCALAPPDATA%/StevensSlideStudio/accounts.sqlite3`. This stores account metadata, hashed codes/sessions and schema version, never decks. `STEVENS_ADMIN_CODE` only controls first bootstrap, not an existing account's code. Google OIDC support is retained for later configuration in `.env.example`; it has not been verified with a real Google tenant and is not required for invitation sign-in.
+
+After login:
+
+- **Use my PowerPoint** opens the existing preservation/redesign workflow.
+- **Generate a new presentation** accepts a topic/outline or PDF, audience, and **Auto / Brief / Standard / Detailed** length selection. The planner chooses the count, up to the current 30-slide resource ceiling. Users can edit/reorder/add/remove outline slides and must approve before generation.
+- Creation composes native text, editable supported charts/tables, speaker notes, function/scientific plots, and rendered mathematical expressions. Plot expressions use an allowlisted mathematical parser; model-produced Python is never executed. Equations use Matplotlib mathtext, with unsupported syntax rejected. Plots/equations are high-resolution image objects with their source specifications preserved in notes, not native editable Office equations.
+- PDF input supports text-layer and scanned documents using local extraction and bounded vision transcription. Original page references and exact source quotations are checked. PDF source figures currently use rendered source pages; specialized figure-only cropping remains a future improvement.
+- Content/chart/formula edits create a new candidate and rerun all gates. A bounded visual repair pass can address QA findings; unresolved problems stay visible and cannot falsely enable verified download. Changes to the outline require fresh approval.
+- Generated pictures are disabled for this release. Charts, plots, equations, native tables and source-page illustrations do not need an image-generation model.
+
+Limits: one PDF per job, 50 MB, 100 pages, 220,000 extracted characters, bounded per-page text and job budgets. New authoring is designed around one major visual per slide. Use one server worker; job state is process-local and not resumed after a restart. Structural checks and the QA agent are evidence, not guarantees of factual truth. Unsupported claims remain review findings; existing source content is not silently fact-corrected.
+
 
 ## Verification commands
 
@@ -83,7 +105,7 @@ npm --prefix frontend run build
 npm --prefix frontend run test:e2e
 ```
 
-Browser tests require the running application and locally installed Chrome. CI installs Chromium and LibreOffice. Use a fresh pytest temporary directory on subsequent runs in restricted environments. Private corpus inputs default to `.local/private`; use `--corpus-root PATH` for another location. The private corpus command is `python tools/run_acceptance.py --output .local/verification/new-run --render`; its output directory must be new. No private decks are uploaded by CI.
+Browser tests require the running application with `STEVENS_OFFLINE=1`, invitation-code sign-in, and locally installed Chrome. Use `tools/start_verification_server.ps1` for an isolated synthetic server on port 8001 and set `STEVENS_TEST_URL=http://127.0.0.1:8001` when running Playwright. CI installs Chromium and LibreOffice. Use a fresh pytest temporary directory on subsequent runs in restricted environments. Private corpus inputs default to `.local/private`; use `--corpus-root PATH` for another location. The private corpus command is `python tools/run_acceptance.py --output .local/verification/new-run --render`; its output directory must be new. No private decks are uploaded by CI.
 
 After configuring keys, run the live checkpoint with a **new** output directory:
 
@@ -92,6 +114,16 @@ After configuring keys, run the live checkpoint with a **new** output directory:
 ```
 
 This sends only a generated synthetic slide, keeps the source/candidate/renders/report locally, and does not approve findings automatically. Exit 0 means ready, 2 means missing keys, and 3 means review or repair is still required. Use `--mock-providers` instead of `--live` to exercise edits and real rendering without API calls; that mode does not validate model quality.
+
+Additional explicit live checks (synthetic content only):
+
+```powershell
+.venv/Scripts/python.exe tools/verify_authoring.py --live --output .local/verification/authoring-live-new
+.venv/Scripts/python.exe tools/verify_authoring.py --live --cases scanned --output .local/verification/scanned-live-new
+.venv/Scripts/python.exe tools/verify_output_qa.py --live --output .local/verification/qa-challenge-new
+```
+
+Authoring exit 0 means all required checks completed without blocking defects; a `needs_review` result still requires explicit review before download. The QA challenge must detect an intentionally incorrect number and slide sequence. These commands never automatically approve human findings and verify removal of their application workspace. Their selected synthetic evidence remains in the requested development output folder.
 
 ## Code map
 

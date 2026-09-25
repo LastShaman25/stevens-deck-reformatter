@@ -5,3 +5,9 @@ python-pptx==1.0.2
 pillow==10.4.0
 requests==2.32.3
 PyMuPDF==1.24.10
+Authlib==1.8.0
+itsdangerous==2.2.0
+matplotlib==3.11.2
+numpy==2.5.3
+python-dotenv>=1.0,<2
+httpx>=0.27,<1

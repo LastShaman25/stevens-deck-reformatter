@@ -28,8 +28,8 @@ test('a failed revision save is visible and stops generation',async()=>{
 test('failed verification disables final download and benchmark',async()=>{
   const generation={generation_id:'g',candidate_sha256:'abc',state:'failed',built_slides:1,checks:{artifact_coverage:{status:'failed'}},findings:[{id:'f',code:'MISSING',message:'Paragraph missing',severity:'blocking',source_slide:0}],human_decisions:[],source_to_output_slides:{'0':[0]},corrections:[]};
   vi.stubGlobal('fetch',vi.fn(()=>response({...session,generation})));render(<App/>);
-  expect(await screen.findByRole('button',{name:'Download verified PowerPoint'})).toBeDisabled();
-  expect(screen.getByRole('button',{name:'Save approved benchmark'})).toBeDisabled();
+  expect(await screen.findByRole('button',{name:'Download verified PowerPoint and finish'})).toBeDisabled();
+  expect(screen.queryByRole('button',{name:'Save approved benchmark'})).not.toBeInTheDocument();
   expect(screen.getByRole('button',{name:'Download unverified draft'})).toBeEnabled();
   expect(screen.getByText('Paragraph missing')).toBeVisible();
 });
@@ -59,7 +59,7 @@ test('configured AI mode sends explicit mode and requires full review',async()=>
   expect(screen.getByText('Provider timed out')).toBeVisible();
   const call=fetcher.mock.calls.find(([url])=>url.endsWith('/generate'));
   expect(JSON.parse(call?.[1]?.body as string)).toEqual({mode:'ai',repair_passes:1});
-  expect(screen.getByRole('button',{name:'Download verified PowerPoint'})).toBeDisabled();
+  expect(screen.getByRole('button',{name:'Download verified PowerPoint and finish'})).toBeDisabled();
 });
 
 test('missing keys block AI generation and connection testing',async()=>{
@@ -75,7 +75,7 @@ test('connection failure is shown without enabling release',async()=>{
   render(<App/>);await screen.findByText(/claude-test/);
   fireEvent.click(screen.getByRole('button',{name:'Test AI connection'}));
   expect(await screen.findByText(/authentication_error/)).toBeVisible();
-  expect(screen.queryByRole('button',{name:'Download verified PowerPoint'})).not.toBeInTheDocument();
+  expect(screen.queryByRole('button',{name:'Download verified PowerPoint and finish'})).not.toBeInTheDocument();
 });
 
 test('progress polling does not request a preview before rendering finishes',async()=>{
@@ -151,7 +151,7 @@ test('bulk approval sends only selected reviewable findings for the current page
   const call=fetcher.mock.calls.find(([url])=>url.endsWith('/decisions'));
   expect(JSON.parse(call?.[1]?.body as string)).toEqual({generation_id:'review-g',candidate_sha256:'checked-hash',finding_ids:['a','b'],rationale:'Inspected both'});
   expect(screen.getByLabelText('Approved finding: Title fit on first page')).toBeDisabled();
-  expect(screen.getByRole('button',{name:'Download verified PowerPoint'})).toBeDisabled();
+  expect(screen.getByRole('button',{name:'Download verified PowerPoint and finish'})).toBeDisabled();
 });
 
 test('failed bulk approval keeps the selection and rationale for retry',async()=>{
@@ -182,7 +182,7 @@ test('a clean page shows an empty state while other slides still have findings',
   expect(await screen.findByText('No findings for this page.')).toBeVisible();
   expect(screen.queryByText('Second source slide only')).not.toBeInTheDocument();
   expect(screen.queryByRole('button',{name:/Approve selected/})).not.toBeInTheDocument();
-  expect(screen.getByRole('button',{name:'Download verified PowerPoint'})).toBeDisabled();
+  expect(screen.getByRole('button',{name:'Download verified PowerPoint and finish'})).toBeDisabled();
 });
 
 test('previous and next navigate source slides, reset split parts, and keep saved notes',async()=>{
