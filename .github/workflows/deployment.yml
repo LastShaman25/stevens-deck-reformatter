@@ -6,6 +6,9 @@ on:
     branches: [reviewed]
 permissions:
   contents: read
+concurrency:
+  group: shared-deployment-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 jobs:
   shared-container:
     runs-on: ubuntu-latest
@@ -19,7 +22,7 @@ jobs:
           POSTGRES_DB: studio
         ports: ['5432:5432']
         options: >-
-          --health-cmd 'pg_isready -U studio'
+          --health-cmd "pg_isready -U studio"
           --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
