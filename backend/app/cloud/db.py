@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS upload_tickets (
  id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, login_id TEXT NOT NULL, target TEXT NOT NULL,
  object_key TEXT NOT NULL, filename TEXT NOT NULL, size BIGINT NOT NULL, expires DOUBLE PRECISION NOT NULL,
  consumed BOOLEAN NOT NULL DEFAULT FALSE);
+ALTER TABLE upload_tickets ADD COLUMN IF NOT EXISTS task_id TEXT;
 '''
 
 

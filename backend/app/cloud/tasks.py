@@ -8,6 +8,7 @@ import time
 import uuid
 import signal
 from threading import BoundedSemaphore
+from contextlib import nullcontext
 from pathlib import Path
 from . import db, state
 
@@ -23,10 +24,10 @@ def code_version():
     return h.hexdigest()
 
 
-def enqueue(sess, operation, body, user):
+def enqueue(sess, operation, body, user, connection=None):
     from ..ai import providers
-    state.active(sess)
-    with db.connect() as con:
+    if connection is None:state.active(sess)
+    with (nullcontext(connection) if connection is not None else db.connect()) as con:
         item=con.execute('SELECT * FROM processing_sessions WHERE id=%s FOR UPDATE',(sess.id,)).fetchone()
         existing=con.execute("SELECT * FROM processing_tasks WHERE session_id=%s AND state IN ('queued','running')",(sess.id,)).fetchone()
         if existing:

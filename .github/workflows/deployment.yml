@@ -30,7 +30,7 @@ jobs:
         run: docker build -f backend/Dockerfile.vercel -t stevens-deployment-test backend
       - name: Install test-only S3 emulator in a derived image
         run: |
-          printf 'FROM stevens-deployment-test\nUSER root\nRUN pip install --no-cache-dir "moto[s3]==5.1.12"\nUSER studio\n' | docker build -t stevens-deployment-tests -
+          printf 'FROM stevens-deployment-test\nUSER root\nRUN pip install --no-cache-dir "moto[server]==5.1.12"\nUSER studio\n' | docker build -t stevens-deployment-tests -
       - name: Run shared authentication, storage, replay, rendering and release-gate checks
         run: |
           docker run --rm --network host \

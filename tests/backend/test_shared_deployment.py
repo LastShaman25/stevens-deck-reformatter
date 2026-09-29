@@ -153,6 +153,8 @@ def test_direct_upload_checks_size_and_freezes_source(shared):
     result=complete_upload(UploadComplete(upload_id=ticket['upload_id']),request)
     tid=json.loads(result.body)['task_id'];task=tasks.get(tid,shared)
     assert task['operation']=='import' and objects.get(task['body']['key'])==b'%PDF-'
+    retry=complete_upload(UploadComplete(upload_id=ticket['upload_id']),request)
+    assert json.loads(retry.body)['task_id']==tid
     objects.put(key,b'xxxxx') # Even a reused upload URL cannot change the frozen input.
     assert objects.get(task['body']['key'])==b'%PDF-'
 
@@ -171,6 +173,41 @@ def test_signin_throttle_survives_process_reset(shared):
     for _ in range(8):db.login_attempt('synthetic-peer',time.time())
     auth._attempts.clear()
     with pytest.raises(Exception,match='Too many'):db.login_attempt('synthetic-peer',time.time())
+
+
+def test_large_previews_use_private_short_lived_object_urls(shared):
+    sess=sessions.create();state.save(sess)
+    path=Path(sess.dir,'large.png');path.write_bytes(b'x'*(5*1024*1024))
+    response=objects.preview_response(sess,path)
+    assert response.status_code==302
+    assert 'X-Amz-Expires=60' in response.headers['location']
+    assert response.headers['cache-control']=='no-store'
+
+
+def test_real_subprocess_import_uses_shared_state(shared,monkeypatch):
+    """No in-process worker substitution: child imports and talks HTTP to S3."""
+    import fitz
+    from moto.server import ThreadedMotoServer
+    server=ThreadedMotoServer(ip_address='127.0.0.1',port=0,verbose=False)
+    server.start()
+    try:
+        host,port=server.get_host_and_port()
+        monkeypatch.setenv('STEVENS_S3_ENDPOINT_URL',f'http://{host}:{port}')
+        sess=sessions.create();state.save(sess)
+        doc=fitz.open();page=doc.new_page(width=960,height=540)
+        page.insert_text((80,100),'Synthetic subprocess import verification',fontsize=28)
+        key=objects.prefix(sess.id)+'input.pdf';objects.put(key,doc.tobytes());doc.close()
+        tid=tasks.enqueue(sess,'import',{'key':key,'filename':'synthetic.pdf'},shared)
+        assert tasks.run_one(tid)['advanced']
+        task=tasks.get(tid)
+        assert task['state']=='completed',task['error']
+        assert task['result']['slide_count']==1
+        with state.scope():
+            restored=state.get(sess.id)
+            with sessions.read_job(restored):
+                assert Path(restored.source_path).is_file()
+                assert Path(restored.preview_path(0,'before')).is_file()
+    finally:server.stop()
 
 
 def test_http_signin_isolation_upload_and_missing_qa_gate(shared):

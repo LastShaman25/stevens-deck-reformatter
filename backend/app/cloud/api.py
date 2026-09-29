@@ -44,7 +44,7 @@ def begin_upload(body:Upload,request:Request):
         raise HTTPException(400,'Choose a PowerPoint or PDF file.')
     tid=uuid.uuid4().hex;key=f'{db.namespace()}/uploads/{tid}{suffix}'
     with db.connect() as con:
-        con.execute('INSERT INTO upload_tickets VALUES (%s,%s,%s,%s,%s,%s,%s,%s,FALSE)',
+        con.execute('INSERT INTO upload_tickets (id,owner_id,login_id,target,object_key,filename,size,expires,consumed) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,FALSE)',
                     (tid,user['id'],user['token'],body.target,key,os.path.basename(body.filename),body.size,time.time()+900))
     post=objects.client().generate_presigned_post(objects.bucket(),key,
         Conditions=[['content-length-range',body.size,body.size]],ExpiresIn=300)
@@ -62,18 +62,21 @@ def complete_upload(body:UploadComplete,request:Request):
     with db.connect() as con:
         ticket=con.execute('SELECT * FROM upload_tickets WHERE id=%s FOR UPDATE',(body.upload_id,)).fetchone()
         if not ticket or ticket['owner_id']!=user['id'] or ticket['login_id']!=user['token'] or ticket['expires']<time.time():raise HTTPException(404,'Upload expired.')
-        if ticket['consumed']:raise HTTPException(409,'Upload already submitted.')
+        if ticket['consumed']:
+            if ticket['task_id']:return queued(ticket['task_id'])
+            raise HTTPException(409,'Upload already submitted.')
         try:size=objects.client().head_object(Bucket=objects.bucket(),Key=ticket['object_key'])['ContentLength']
         except Exception:raise HTTPException(409,'Upload has not completed.')
         if size!=ticket['size']:raise HTTPException(400,'Uploaded file size does not match.')
-        sess=sessions.create() if ticket['target']=='/api/sessions' else own_session(ticket['target'].split('/')[3],user)
+        sess=state.create(con) if ticket['target']=='/api/sessions' else own_session(ticket['target'].split('/')[3],user)
         frozen=objects.prefix(sess.id)+'inputs/'+uuid.uuid4().hex+os.path.splitext(ticket['filename'])[1].lower()
         objects.client().copy_object(Bucket=objects.bucket(),Key=frozen,CopySource={'Bucket':objects.bucket(),'Key':ticket['object_key']})
-        con.execute('UPDATE upload_tickets SET consumed=TRUE WHERE id=%s',(body.upload_id,))
-    if sess._cloud_new:state.save(sess)
-    try:
-        tid=tasks.enqueue(sess,'import' if ticket['target']=='/api/sessions' else 'pdf',{'key':frozen,'filename':ticket['filename']},user)
-    except ValueError as exc:raise HTTPException(409,str(exc))
+        try:
+            tid=tasks.enqueue(sess,'import' if ticket['target']=='/api/sessions' else 'pdf',{'key':frozen,'filename':ticket['filename']},user,connection=con)
+        except ValueError as exc:raise HTTPException(409,str(exc))
+        con.execute('UPDATE upload_tickets SET consumed=TRUE,task_id=%s WHERE id=%s',(tid,body.upload_id))
+    # The session baseline, task and consumed ticket committed atomically.
+    sess._cloud_new=False
     objects.remove(ticket['object_key'])
     return queued(tid)
 

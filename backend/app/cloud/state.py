@@ -5,7 +5,7 @@ import shutil
 import tempfile
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from pathlib import Path
 from threading import Lock
@@ -66,7 +66,7 @@ def active(sess):
         raise ValueError('Job closed, sign-in revoked, or workspace expired.')
 
 
-def create():
+def create(connection=None):
     from .. import sessions
     from ..auth import current_user
     user=current_user.get()
@@ -74,7 +74,7 @@ def create():
     sid=uuid.uuid4().hex
     directory=tempfile.mkdtemp(prefix='stevens-shared-')
     sess=sessions.Session(sid,directory)
-    with db.connect() as con:
+    with (nullcontext(connection) if connection is not None else db.connect()) as con:
         con.execute('SELECT pg_advisory_xact_lock(hashtext(%s))',('workspaces:'+user['id'],))
         count=con.execute("SELECT count(*) AS n FROM processing_sessions WHERE owner_id=%s AND lifecycle='active' AND expires>%s",(user['id'],time.time())).fetchone()['n']
         if count>=3:
