@@ -16,12 +16,12 @@ async function request<T>(path: string, body?: unknown, method = "POST"): Promis
 }
 const empty: Revision = {tags: [], instruction: "", reset_emphasis: false};
 
-function Preview({url, label}: {url: string | null; label: string}) {
+function Preview({url, label, placeholder}: {url: string | null; label: string; placeholder?: string}) {
   const [failed, setFailed] = useState(false);
   useEffect(() => setFailed(false), [url]);
   return <figure className="min-w-0 flex-1"><figcaption className="mb-2 text-xs font-bold text-stevens-gray">{label}</figcaption>
     {url && !failed ? <ExpandablePreview className="w-full rounded border border-stevens-lightgray" src={url} alt={label} onError={() => setFailed(true)} /> :
-      <div className="grid min-h-48 place-items-center rounded border border-stevens-lightgray bg-white p-5 text-sm text-stevens-gray">Rendered preview unavailable</div>}
+      <div className="grid aspect-video min-h-48 place-items-center rounded border border-stevens-lightgray bg-white p-5 text-center text-sm text-stevens-gray">{placeholder || 'Rendered preview unavailable'}</div>}
   </figure>;
 }
 
@@ -115,8 +115,12 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
       if (token !== scope.current) return;
       generationPending.current=false;
       setGeneration(res.generation); setSaved(false);
-      if (res.generation.candidate_sha256) setPreviewGeneration(res.generation);
-      setOutput(res.generation.source_to_output_slides[String(current)]?.[0] ?? 0);
+      if (res.generation.candidate_sha256) {
+        setPreviewGeneration(res.generation);
+        const nextOutput=res.generation.source_to_output_slides[String(current)]?.[0] ?? Math.min(output,Math.max(0,res.generation.built_slides-1));
+        setOutput(nextOutput);
+        setCurrent(Number(Object.entries(res.generation.source_to_output_slides).find(([,parts])=>parts.includes(nextOutput))?.[0] ?? -1));
+      }
     });
     generationPending.current=false;setGenerating(false);
   }
@@ -185,16 +189,26 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
     }
   }
   function navigateSlide(index: number) {
-    if (busy || !session || index < 0 || index >= session.slide_count) return;
-    setCurrent(index);
-    setOutput(previewGeneration?.source_to_output_slides[String(index)]?.[0] ?? 0);
+    if (busy || !session || index < 0 || index >= reviewSlides.length) return;
+    setCurrent(reviewSlides[index].source);
+    setOutput(index);
   }
+  const reviewingOutput=!!previewGeneration?.built_slides;
+  const reviewSlides=Array.from({length:reviewingOutput ? previewGeneration!.built_slides : session?.slide_count ?? 0},(_,index)=>{
+    const source=reviewingOutput ? Number(Object.entries(previewGeneration!.source_to_output_slides).find(([,parts])=>parts.includes(index))?.[0] ?? -1) : index;
+    const parts=previewGeneration?.source_to_output_slides[String(source)] ?? [];
+    const added=previewGeneration?.added_slides?.find(slide=>slide.output_slide===index);
+    const title=source>=0 ? session?.slides.find(slide=>slide.index===source)?.title || '(untitled)' : added?.text || 'Added slide';
+    const origin=source>=0 ? `Source ${source+1}${parts.length>1 ? ` · Part ${parts.indexOf(index)+1} of ${parts.length}` : ''}` : 'No original';
+    return {source,label:reviewingOutput ? `${index+1}: ${title} · ${origin}` : `${index+1}: ${title}`};
+  });
+  const reviewIndex=reviewingOutput ? output : current;
   const rev = revs[current] ?? empty;
   const resolved = new Set(generation?.human_decisions.flatMap(d => d.finding_ids) ?? []);
   const outputs = previewGeneration?.source_to_output_slides[String(current)] ?? [];
   const previewIsPrevious = !!previewGeneration && (generating || !generation || generation.generation_id !== previewGeneration.generation_id);
   const pageFindings = generation?.findings.filter(f => f.affected_slides?.length ? f.affected_slides.includes(output) : f.output_slide != null
-    ? outputs.includes(output) && f.output_slide === output : findingSource(f) === current) ?? [];
+    ? f.output_slide === output : current>=0 && findingSource(f) === current) ?? [];
   const deckFindings = generation?.findings.filter(f => f.output_slide == null && !f.affected_slides?.length && findingSource(f) == null) ?? [];
   const reviewScope = `${session?.session_id}:${generation?.generation_id}:${generation?.candidate_sha256}`;
   const sid = session?.session_id;
@@ -216,38 +230,37 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
     {notice && <div role="status" className="mx-5 mt-4 rounded bg-stevens-lightblue p-3 text-sm">{notice}</div>}
     {!session ? <UploadStep onFile={upload} busy={busy} /> : <main className="mx-auto max-w-7xl p-5">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-bold">{session.name}</h2>
-        <p className="text-sm text-stevens-gray">{session.slide_count} source slides{generation ? ` → ${generation.built_slides} output slides` : ''}</p>{previewGeneration?.added_slides?.map(slide=><a key={slide.output_slide} className="text-sm underline" href={`#added-slide-${slide.output_slide}`}>View added Thank you closing · slide {slide.output_slide+1}</a>)}</div>
+        <p className="text-sm text-stevens-gray">{session.slide_count} source slides{previewGeneration ? ` → ${previewGeneration.built_slides} output slides` : ''}</p>{previewGeneration?.added_slides?.map(slide=><a key={slide.output_slide} className="text-sm underline" href="#slide-review" onClick={()=>navigateSlide(slide.output_slide)}>View added Thank you closing · slide {slide.output_slide+1}</a>)}</div>
         <button className="btn-red" disabled={busy || !aiConfig?.configured} onClick={generate}>{busy ? 'Working…' : 'Redesign + QA'}</button></div>
       <div className="grid gap-5 lg:grid-cols-[1fr_330px]">
-        <section className="card p-5">
+        <section id="slide-review" className="card p-5">
           <nav aria-label="Slide navigation" className="mb-4 flex flex-wrap items-center justify-between gap-2">
-            <button aria-label="Previous slide" className="btn-ghost disabled:cursor-not-allowed disabled:opacity-40" disabled={busy || current === 0} onClick={() => navigateSlide(current-1)}>
+            <button aria-label="Previous slide" className="btn-ghost disabled:cursor-not-allowed disabled:opacity-40" disabled={busy || reviewIndex === 0} onClick={() => navigateSlide(reviewIndex-1)}>
               <span aria-hidden="true">←</span> Previous slide
             </button>
-            <span className="text-sm text-stevens-gray" aria-live="polite">Slide {current+1} of {session.slide_count}</span>
-            <button aria-label="Next slide" className="btn-ghost disabled:cursor-not-allowed disabled:opacity-40" disabled={busy || current >= session.slide_count-1} onClick={() => navigateSlide(current+1)}>
+            <span className="text-sm text-stevens-gray" aria-live="polite">{reviewingOutput ? 'Output slide' : 'Slide'} {reviewIndex+1} of {reviewSlides.length}</span>
+            <button aria-label="Next slide" className="btn-ghost disabled:cursor-not-allowed disabled:opacity-40" disabled={busy || reviewIndex >= reviewSlides.length-1} onClick={() => navigateSlide(reviewIndex+1)}>
               Next slide <span aria-hidden="true">→</span>
             </button>
           </nav>
-          <label className="block text-sm font-bold">Source slide <select aria-label="Source slide" className="mt-1 w-full min-w-0 rounded border p-2" value={current} disabled={busy} onChange={e => navigateSlide(Number(e.target.value))}>
-            {session.slides.map(s => <option key={s.index} value={s.index}>{s.index+1}: {s.title}</option>)}</select></label>
-          {outputs.length > 1 && <label className="ml-3 text-sm">Output part <select aria-label="Output part" value={output} disabled={busy} onChange={e => setOutput(Number(e.target.value))}>
-            {outputs.map((o,i) => <option key={o} value={o}>{i+1}</option>)}</select></label>}
+          <label className="block text-sm font-bold">{reviewingOutput ? 'Review slide' : 'Source slide'} <select aria-label={reviewingOutput ? 'Review slide' : 'Source slide'} className="mt-1 w-full min-w-0 rounded border p-2" value={reviewIndex} disabled={busy} onChange={e => navigateSlide(Number(e.target.value))}>
+            {reviewSlides.map((slide,index) => <option key={index} value={index}>{slide.label}</option>)}</select></label>
+          {outputs.length>1 && <p className="mt-2 text-sm text-stevens-gray">Part {outputs.indexOf(output)+1} of {outputs.length} from source slide {current+1}. Each part is shown beside the same original.</p>}
           <div className="mt-4 flex flex-col gap-4 md:flex-row">
-            <Preview url={`/api/sessions/${sid}/slides/${current}/preview?variant=before`} label="Original source" />
-            <Preview url={previewGeneration && outputs.length ? `/api/sessions/${sid}/slides/${output}/preview?variant=after&generation_id=${previewGeneration.generation_id}` : null} label="Generated candidate" />
+            <Preview url={current>=0 ? `/api/sessions/${sid}/slides/${current}/preview?variant=before` : null} label="Original source" placeholder={current<0 ? 'No original slide — this page was added during redesign.' : undefined} />
+            <Preview url={reviewingOutput ? `/api/sessions/${sid}/slides/${output}/preview?variant=after&generation_id=${previewGeneration!.generation_id}` : null} label="Generated candidate" />
           </div>
           {previewIsPrevious && <p role="status" className="mt-3 text-sm text-amber-800">Showing the previous candidate. Your latest instructions are not applied yet; generate again to update and verify it.</p>}
           {!previewIsPrevious && previewGeneration && !previewGeneration.download_allowed && <p className="mt-3 text-sm text-amber-800">Deck download blocked. Open findings on the affected slides below; this message does not mean the displayed slide failed.</p>}
           <p className="mt-3 text-xs text-stevens-gray">Previews show real renders when available. Review decisions apply to a specific generated file.</p>
-          <fieldset disabled={busy} className="mt-5"><legend className="text-sm font-bold">Corrections</legend>
+          {current>=0 ? <fieldset disabled={busy} className="mt-5"><legend className="text-sm font-bold">Corrections</legend>
             <div className="mt-2 flex flex-wrap gap-2">{[['split','Split slide'],['dense','Too dense'],['layout','Layout'],['overlap','Overlap'],['diagram','Preserve diagram'],['emphasis','Source emphasis']].map(([id,label]) =>
               <button key={id} aria-pressed={rev.tags.includes(id)} className={rev.tags.includes(id) ? 'btn-red' : 'btn-ghost'} onClick={() => changeRevision({...rev, tags:rev.tags.includes(id) ? rev.tags.filter(x => x !== id) : [...rev.tags,id], reset_emphasis: id === 'emphasis' ? true : rev.reset_emphasis})}>{label}</button>)}</div>
             <label className="mt-4 block text-sm">Redesign instructions
               <textarea aria-label="Reviewer note" className="mt-1 w-full rounded border p-3" rows={3} value={rev.instruction} onChange={e => changeRevision({...rev,instruction:e.target.value})} /></label>
             <p className="mt-1 text-xs text-stevens-gray">Instructions guide layout and styling. Original wording, chart data, notes, and links remain protected.</p>
             <button className="btn-ghost mt-2" onClick={apply}>Save revision</button>
-          </fieldset>
+          </fieldset> : <p className="mt-5 text-sm text-stevens-gray">This added page is included in mandatory QA. Its findings appear below.</p>}
           <p className="mt-4 text-xs text-stevens-gray">Redesign includes mandatory visual review of every output slide and one repair pass.</p>
           {generation?.corrections.filter(c => c.index === current).flatMap(c => c.actions).map((a,i) => <p className="mt-2 text-sm" key={i}>{a.action}: <b>{a.status}</b> — {a.message}</p>)}
         </section>
@@ -264,7 +277,7 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
             {generation.ai_pipeline.failure_message && <p className="mt-2 text-stevens-red">{generation.ai_pipeline.failure_message}</p>}
             {generation.source_decisions?.[String(current)] && <p className="mt-2">This slide: {generation.source_decisions[String(current)].action==='keep_original'?'kept unchanged':'redesigned'} · {generation.source_decisions[String(current)].removed_artwork} artwork elements removed. {!!generation.source_decisions[String(current)].extracted_logos && <>{generation.source_decisions[String(current)].extracted_logos} embedded logos preserved. </>}{generation.source_decisions[String(current)].reason}</p>}
             <p>{generation.ai_pipeline.calls.length} pipeline steps · {generation.ai_pipeline.changed_objects} object edits</p>
-            {generation.usage && <p>Upload total: {generation.usage.upload_requests} requests · {generation.usage.upload_tokens.toLocaleString()} recorded tokens{generation.usage.token_limit?` of ${generation.usage.token_limit.toLocaleString()} allowed`:''} (includes retries and QA).</p>}
+            {generation.usage && <p>Upload total: {generation.usage.upload_requests} requests · {generation.usage.upload_tokens.toLocaleString()} recorded tokens{generation.usage.token_limit?` of ${generation.usage.token_limit.toLocaleString()} allowed`:''} (includes retries and QA).{generation.usage.token_limit===null ? ' No cumulative token limit.' : ''}</p>}
             {generation.ai_pipeline.attempts.map((a,i)=><p key={i}>Pass {a.attempt+1}: {a.accepted?'accepted':'rejected'}{a.reason?` — ${a.reason}`:''}</p>)}
             {generation.output_qa_repairs?.map(a=><p key={`qa-${a.attempt}`}>Final QA repair {a.attempt} · slides {a.targets.map(i=>i+1).join(', ')}: {a.accepted?'accepted after recheck':'previous candidate retained'}{a.reason?` — ${a.reason}`:''}</p>)}
             {generation.repair_stop_reason && <p className="text-stevens-red">{generation.repair_stop_reason}</p>}
@@ -279,16 +292,9 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
       </div>
       {generation && !generating && generation.state !== 'checking' && <section className="card mt-5 p-5">
         <h2 className="font-bold">Findings for this page</h2>
-        <p className="mt-1 text-sm text-stevens-gray">Source slide {current+1}{outputs.length > 1 ? ` · Output part ${outputs.indexOf(output)+1} of ${outputs.length}` : ''} · {pageFindings.length} findings</p>
+        <p className="mt-1 text-sm text-stevens-gray">Output slide {output+1} · {current>=0 ? `Source slide ${current+1}` : 'No original slide'}{outputs.length > 1 ? ` · Part ${outputs.indexOf(output)+1} of ${outputs.length}` : ''} · {pageFindings.length} findings</p>
         <FindingsList key={`${reviewScope}:${current}:${output}`} findings={pageFindings} resolved={resolved} busy={busy} onApprove={approve} />
       </section>}
-      {previewGeneration?.added_slides?.map(slide => <section id={`added-slide-${slide.output_slide}`} key={`added-${slide.output_slide}`} className="card mt-5 p-5">
-        <h2 className="font-bold">Added closing slide · Output slide {slide.output_slide+1}</h2>
-        <p className="mt-1 mb-3 text-sm text-stevens-gray">The required Stevens Thank you page follows all original content and is included in QA.</p>
-        <Preview url={`/api/sessions/${sid}/slides/${slide.output_slide}/preview?variant=after&generation_id=${previewGeneration.generation_id}`} label="Thank you closing slide" />
-        {generation && <FindingsList findings={generation.findings.filter(f => f.output_slide===slide.output_slide || f.affected_slides?.includes(slide.output_slide))}
-          resolved={resolved} busy={busy} onApprove={approve} />}
-      </section>)}
     </main>}
   </div>;
 }

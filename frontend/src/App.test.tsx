@@ -23,13 +23,24 @@ test('completed QA with cosmetic suggestions enables download and labels them no
 
 test('added closing has its own output preview without claiming it was a source page',async()=>{
   const generation={generation_id:'g',candidate_sha256:'abc',mode:'ai',state:'ready',download_allowed:true,
-    built_slides:2,checks:{},findings:[],human_decisions:[],source_to_output_slides:{'0':[0]},corrections:[],
+    built_slides:2,checks:{},findings:[{id:'closing',code:'VISUAL',message:'Closing finding only',severity:'warning',output_slide:1}],human_decisions:[],source_to_output_slides:{'0':[0]},corrections:[],
     added_slides:[{output_slide:1,kind:'closing',text:'Thank you!',authorization:'Required closing'}]};
   vi.stubGlobal('fetch',vi.fn(()=>response({...session,generation})));render(<App/>);
-  expect(await screen.findByText('Added closing slide · Output slide 2')).toBeVisible();
-  expect(screen.getByRole('link',{name:'View added Thank you closing · slide 2'})).toHaveAttribute('href','#added-slide-1');
-  expect(screen.getByAltText('Thank you closing slide')).toHaveAttribute('src','/api/sessions/test/slides/1/preview?variant=after&generation_id=g');
-  expect(screen.getByLabelText('Source slide').querySelectorAll('option')).toHaveLength(1);
+  await screen.findByLabelText('Review slide');
+  expect(screen.getByLabelText('Review slide').querySelectorAll('option')).toHaveLength(2);
+  expect(screen.queryByText('Closing finding only')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button',{name:'Next slide'}));
+  expect(screen.getByText('Output slide 2 of 2')).toBeVisible();
+  expect(screen.getByText('No original slide — this page was added during redesign.')).toBeVisible();
+  expect(screen.queryByAltText('Original source')).not.toBeInTheDocument();
+  expect(screen.getByAltText('Generated candidate')).toHaveAttribute('src','/api/sessions/test/slides/1/preview?variant=after&generation_id=g');
+  expect(screen.getByText('Closing finding only')).toBeVisible();
+  expect(screen.queryByLabelText('Reviewer note')).not.toBeInTheDocument();
+  expect(screen.getByRole('button',{name:'Next slide'})).toBeDisabled();
+  fireEvent.click(screen.getByRole('button',{name:'Previous slide'}));
+  expect(screen.getByLabelText('Reviewer note')).toHaveValue('Saved note');
+  fireEvent.click(screen.getByRole('link',{name:'View added Thank you closing · slide 2'}));
+  expect(screen.getByText('Output slide 2 of 2')).toBeVisible();
 });
 
 test('resume restores revisions without optional mode or check controls',async()=>{
@@ -170,12 +181,12 @@ test('findings follow source and output page and discard selections when navigat
   fireEvent.click(screen.getByLabelText('Select all review findings on this page'));
   fireEvent.change(screen.getByLabelText('Review rationale'),{target:{value:'First page inspected'}});
   expect(screen.getByRole('button',{name:'Approve selected (2)'})).toBeEnabled();
-  fireEvent.change(screen.getByLabelText('Output part'),{target:{value:'1'}});
+  fireEvent.change(screen.getByLabelText('Review slide'),{target:{value:'1'}});
   expect(screen.getByText('Second output part only')).toBeVisible();
   expect(screen.queryByText('Title fit on first page')).not.toBeInTheDocument();
   expect(screen.getByRole('button',{name:'Approve selected (0)'})).toBeDisabled();
   expect(screen.getByLabelText('Review rationale')).toHaveValue('');
-  fireEvent.change(screen.getByLabelText('Source slide'),{target:{value:'1'}});
+  fireEvent.change(screen.getByLabelText('Review slide'),{target:{value:'2'}});
   expect(screen.getByText('Second source slide only')).toBeVisible();
   expect(screen.queryByText('Second output part only')).not.toBeInTheDocument();
 });
@@ -227,21 +238,26 @@ test('a clean page shows an empty state while other slides still have findings',
   expect(screen.getByRole('button',{name:'Download verified PowerPoint and finish'})).toBeDisabled();
 });
 
-test('previous and next navigate source slides, reset split parts, and keep saved notes',async()=>{
+test('previous and next visit every split output in order and keep source notes',async()=>{
   vi.stubGlobal('fetch',vi.fn(()=>response(reviewSession)));render(<App/>);
-  await screen.findByLabelText('Source slide');
+  await screen.findByLabelText('Review slide');
   expect(screen.getByRole('button',{name:'Previous slide'})).toBeDisabled();
-  expect(screen.getByText('Slide 1 of 2')).toBeVisible();
-  fireEvent.change(screen.getByLabelText('Output part'),{target:{value:'1'}});
+  expect(screen.getByText('Output slide 1 of 3')).toBeVisible();
   fireEvent.click(screen.getByRole('button',{name:'Next slide'}));
-  expect(screen.getByLabelText('Source slide')).toHaveValue('1');
-  expect(screen.getByText('Slide 2 of 2')).toBeVisible();
+  expect(screen.getByText('Output slide 2 of 3')).toBeVisible();
+  expect(screen.getByAltText('Original source')).toHaveAttribute('src',expect.stringContaining('/slides/0/preview'));
+  expect(screen.getByAltText('Generated candidate')).toHaveAttribute('src',expect.stringContaining('/slides/1/preview'));
+  expect(screen.getByText('Second output part only')).toBeVisible();
+  fireEvent.click(screen.getByRole('button',{name:'Next slide'}));
+  expect(screen.getByLabelText('Review slide')).toHaveValue('2');
+  expect(screen.getByText('Output slide 3 of 3')).toBeVisible();
   expect(screen.getByText('Second source slide only')).toBeVisible();
   expect(screen.getByAltText('Generated candidate')).toHaveAttribute('src',expect.stringContaining('/slides/2/preview'));
   expect(screen.getByRole('button',{name:'Next slide'})).toBeDisabled();
   fireEvent.click(screen.getByRole('button',{name:'Previous slide'}));
-  expect(screen.getByLabelText('Source slide')).toHaveValue('0');
-  expect(screen.getByLabelText('Output part')).toHaveValue('0');
+  expect(screen.getByLabelText('Review slide')).toHaveValue('1');
+  fireEvent.click(screen.getByRole('button',{name:'Previous slide'}));
+  expect(screen.getByLabelText('Review slide')).toHaveValue('0');
   expect(screen.getByLabelText('Reviewer note')).toHaveValue('Saved note');
   expect(screen.getByText('Title fit on first page')).toBeVisible();
 });

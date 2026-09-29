@@ -22,6 +22,7 @@ def isolated_sessions(tmp_path, monkeypatch):
 
 
 def test_planning_cannot_consume_ordered_qa_reserve(openai_config, monkeypatch):
+    monkeypatch.setenv('STEVENS_AI_MAX_TOKENS','500000')
     sess=sessions.create()
     providers.reserve_output_qa(sess, 16)
     sess.tokens=500000-sess.qa_token_reserve-100
@@ -39,14 +40,32 @@ def test_planning_cannot_consume_ordered_qa_reserve(openai_config, monkeypatch):
     finally: sessions.active_session.reset(token)
 
 
-def test_redesign_budget_scales_but_explicit_upload_cap_wins(monkeypatch):
+def test_cumulative_limits_are_opt_in(monkeypatch):
     sess=sessions.create()
+    monkeypatch.setattr(providers,'ENV_FILE',__import__('pathlib').Path(sess.dir)/'absent.env')
+    monkeypatch.delenv('STEVENS_AI_MAX_TOKENS',raising=False)
+    monkeypatch.delenv('STEVENS_AI_MAX_CALLS',raising=False)
+    providers.reserve_output_qa(sess,100,redesign=True)
+    assert providers.token_limit(sess) is None
+    assert providers.request_limit() is None
     monkeypatch.setenv('STEVENS_AI_MAX_TOKENS','500000')
     providers.reserve_output_qa(sess,16,redesign=True)
-    assert sess.default_token_limit==1920000
     assert providers.token_limit(sess)==500000
-    providers.reserve_output_qa(sess,100,redesign=True)
-    assert sess.default_token_limit==2000000
+
+
+@pytest.mark.parametrize('role',['planner','reviewer','output_qa'])
+def test_unlimited_admission_above_previous_caps(openai_config,monkeypatch,role):
+    monkeypatch.setenv('STEVENS_AI_MAX_TOKENS','0')
+    monkeypatch.setenv('STEVENS_AI_MAX_CALLS','0')
+    sess=sessions.create(); providers.reserve_output_qa(sess,17,redesign=True)
+    sess.tokens=5000000; sess.calls=600
+    sent=[]
+    monkeypatch.setattr(providers.requests,'post',lambda *a,**kw:(sent.append(True) or reply(completed({'ok':True}))))
+    token=sessions.active_session.set(sess)
+    try:
+        assert providers.generate(role,'JSON',{})['status']=='completed'
+        assert sent and sess.calls==601
+    finally:sessions.active_session.reset(token)
 
 
 def test_redesign_review_continues_after_one_slide_response_errors(ai_session, monkeypatch):

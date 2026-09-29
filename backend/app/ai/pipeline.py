@@ -115,14 +115,13 @@ def execute(sess,candidate,report,directory,repair_passes=1,progress=lambda **kw
     config=providers.capabilities()
     ai={'configuration':config,'calls':[],'attempts':[],'status':'checking','changed_objects':0,
         'rubric_version':rubric.VERSION,'element_roles':[]}
-    try:max_calls=max(1,min(500,int(providers.setting('STEVENS_AI_MAX_CALLS','160'))))
-    except ValueError:max_calls=160
+    max_calls=providers.request_limit()
 
     def call(role,system,payload,images,index,attempt):
         progress(stage='identifying_element_roles' if role=='element_roles' else 'planning' if role=='planner' else 'visual_review',output_slide=index,
                  attempt=attempt,completed_calls=len(ai['calls']),max_calls=max_calls)
         started=time.monotonic()
-        if calls_used+len(ai['calls'])>=max_calls:
+        if max_calls is not None and calls_used+len(ai['calls'])>=max_calls:
             result={'status':'budget_exhausted','message':f'The configured limit of {max_calls} AI calls was reached.'}
         else:result=providers.generate(role,system,payload,images,max_tokens=16000 if role in ('planner','element_roles') else 10000)
         ai['calls'].append({'role':'source_decision' if payload.get('stage')=='source_decisions' else 'logo_extraction_review' if payload.get('stage')=='logo_extraction_review' else role,'output_slide':index,'attempt':attempt,

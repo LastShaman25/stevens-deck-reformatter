@@ -18,7 +18,7 @@ type Content={id:string;title:string;bullets:string[];notes:string;equation:stri
   figure_page:number|null;citations:{page:number;quote:string}[];assumptions:string[]};
 type Job={id:string;request:{topic:string;audience:string;length_preference:string;source:string};outline:Outline|null;revision:number;
   content_revision:number;approved_hash:string|null;deck:{slides:Content[]}|null;status:string;error:string|null;
-  pages:{page:number;text:string;uncertainty:string}[];generation:Generation|null;progress:Record<string,string|number>;expires_at:number};
+  pages:{page:number;text:string;uncertainty:string}[];generation:Generation|null;progress:Record<string,string|number|null>;expires_at:number};
 
 export function Creation({onHome}:{onHome:()=>void}){
   const [job,setJob]=useState<Job|null>(null), [outline,setOutline]=useState<Outline|null>(null);

@@ -91,22 +91,26 @@ def generate(role, system, payload, images=(), max_tokens=16000):
 
 
 def token_limit(sess):
-    return int(setting('STEVENS_AI_MAX_TOKENS', str(getattr(sess, 'default_token_limit', 500000))))
+    value = int(setting('STEVENS_AI_MAX_TOKENS', '0'))
+    return value if value > 0 else None
+
+
+def request_limit():
+    value = int(setting('STEVENS_AI_MAX_CALLS', '0'))
+    return value if value > 0 else None
 
 
 def reserve_output_qa(sess, slide_count, redesign=False):
     """Protect one complete ordered review from planning and repair calls.
 
     Estimates include overlapping batches, full-deck synthesis, and retries.
-    Explicit configured caps are never increased. Redesign needs source decisions,
-    native layout calls, paired per-slide review AND final ordered QA. Its default
-    budget therefore scales with deck size, bounded at two million tokens.
+    Only explicit positive caps apply. Zero/unset disables cumulative limits;
+    request timeouts, execution deadlines and bounded repairs still apply.
     """
     batches = (slide_count + 4) // 5
     sess.qa_call_reserve = 2 * (batches + 1)
-    sess.default_token_limit = max(500000, min(2000000, 120000 * slide_count)) if redesign else 500000
     cap = token_limit(sess)
-    sess.qa_token_reserve = min(cap, 24000 * (batches + 1) + 5000 * slide_count)
+    sess.qa_token_reserve = min(cap, 24000 * (batches + 1) + 5000 * slide_count) if cap is not None else 0
 
 
 def request_token_estimate(system, payload, images, max_tokens):
@@ -126,7 +130,7 @@ def _generate_once(role, system, payload, images=(), max_tokens=16000):
     if sess:
         try:
             sess.ensure_active()
-            limit = int(setting('STEVENS_AI_MAX_CALLS', '160'))
+            limit = request_limit()
             reserve = getattr(sess, 'qa_call_reserve', 8) if role != 'output_qa' else 0
             token_reserve = getattr(sess, 'qa_token_reserve', 0) if role != 'output_qa' else 0
             if role not in ('reviewer', 'output_qa'):
@@ -135,7 +139,8 @@ def _generate_once(role, system, payload, images=(), max_tokens=16000):
                 token_reserve += 8000 * remaining
             upload_token_limit = token_limit(sess)
             estimate = request_token_estimate(system, payload, images, max_tokens)
-            if sess.calls >= limit-reserve or sess.tokens + estimate > upload_token_limit-token_reserve:
+            if ((limit is not None and sess.calls >= limit-reserve)
+                    or (upload_token_limit is not None and sess.tokens + estimate > upload_token_limit-token_reserve)):
                 reason = ' Remaining budget is reserved for mandatory output QA.' if role != 'output_qa' and token_reserve else ''
                 return {'status':'budget_exceeded', 'message':f'Insufficient upload budget for this {role} request ({sess.calls} requests, {sess.tokens} recorded tokens across attempts).'+reason+' Output remains blocked unless every required check passes.'}
             sess.calls += 1

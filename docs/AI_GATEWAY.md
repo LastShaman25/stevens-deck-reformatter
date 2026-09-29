@@ -13,6 +13,8 @@ STEVENS_AI_PLANNER_MODEL=anthropic/claude-sonnet-5.5
 STEVENS_AI_REVIEWER_MODEL=anthropic/claude-opus-5.5-fast
 AI_GATEWAY_REASONING_EFFORT=low
 AI_GATEWAY_REVIEW_REASONING_EFFORT=medium
+STEVENS_AI_MAX_CALLS=0
+STEVENS_AI_MAX_TOKENS=0
 ```
 
 Remove old `STEVENS_AI_PLANNER` and `STEVENS_AI_REVIEWER` overrides, or set both to `vercel`. The planner model handles source decisions, element recognition, redesign, outline planning, extraction and authoring. The reviewer model handles paired slide review and final ordered output QA. Both receive images where the workflow calls for them. Both recommended models are Anthropic models, so this is separate review, not cross-provider independence.
@@ -31,7 +33,7 @@ The public [Gateway model catalog](https://vercel.com/ai-gateway/models) and `/v
 
 Sources: [Sonnet](https://vercel.com/ai-gateway/models/claude-sonnet-5.5), [Opus Fast](https://vercel.com/ai-gateway/models/claude-opus-5.5-fast), [Sol Fast](https://vercel.com/ai-gateway/models/gpt-6-sol-fast), [Gemini Flash](https://vercel.com/ai-gateway/models/gemini-3.8-flash), [Grok](https://vercel.com/ai-gateway/models/grok-4.7).
 
-Vercel's latency figures are live provider metrics, including time to first token, not complete deck processing times. Images, prompt length, reasoning, generated output, rendering and repair rounds all affect end-to-end time. Budget was not the deciding factor in this recommendation. Existing execution limits still prevent runaway jobs; they do not select a cheaper model automatically.
+Vercel's latency figures are live provider metrics, including time to first token, not complete deck processing times. Images, prompt length, reasoning, generated output, rendering and repair rounds all affect end-to-end time. Budget was not the deciding factor in this recommendation. Cumulative request/token ceilings are disabled by default: zero or an unset variable means unlimited; a positive value opts into a cap. Execution deadlines, request timeouts and bounded retries/non-improving repairs remain; they do not select a cheaper model automatically.
 
 ## Changing models
 
