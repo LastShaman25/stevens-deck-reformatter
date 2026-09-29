@@ -28,6 +28,7 @@ def slide_index(sess, index):
 
 def capabilities():
     return {'libreoffice': rendering.libreoffice_available(), 'renderer': rendering.renderer_info(),
+            'vercel':providers.configured('vercel'),
             'openai':providers.configured('openai'),
             'gemini': providers.configured('gemini'), 'claude': providers.configured('anthropic'),
             'ai':providers.capabilities()}

@@ -10,6 +10,7 @@ from pptx.chart.data import CategoryChartData, XyChartData
 from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION
 from .. import grounded, brand
 from .graphics import render_plot, render_equation
+from . import diagrams
 from slide_engine import template_policy as T
 
 
@@ -51,7 +52,7 @@ def compose(spec, path, assets, pages=(), kinds=None):
         title = slide.shapes.add_textbox(*(Inches(v) for v in (T.CLOSING_TITLE if closing else T.COVER_TITLE if bookend else (.7,.4,11.7,1.4))))
         title.name = 'authored-title'
         text(title, [content.title], 40)
-        visual = any(v is not None for v in (content.chart, content.plot, content.equation, content.figure_page, content.table))
+        visual = any(v is not None for v in (content.chart, content.plot, content.equation, content.figure_page, content.table, content.diagram))
         body = slide.shapes.add_textbox(*(Inches(v) for v in (T.CLOSING_DETAILS if closing else T.COVER_DETAILS if bookend else (.75,2,4.0 if visual else 11.5,4.4))))
         body.name = 'authored-body'
         text(body, content.bullets, 20 if sum(map(len, content.bullets)) < 600 else 18)
@@ -61,7 +62,10 @@ def compose(spec, path, assets, pages=(), kinds=None):
                     paragraph.font.color.rgb=RGBColor.from_string(brand.WHITE)
         vx,vy,vw,vh=T.COVER_SUPPORT if index==0 else (5,2,7.2,4.3)
         image_hash = None
-        if content.chart:
+        diagram_shapes = []
+        if content.diagram:
+            diagram_shapes = diagrams.compose(slide, content.diagram, (vx,vy,vw,vh))
+        elif content.chart:
             chart = content.chart
             if chart.kind == 'scatter':
                 data = XyChartData()
@@ -91,8 +95,12 @@ def compose(spec, path, assets, pages=(), kinds=None):
             for ri, row in enumerate(data):
                 for ci, value in enumerate(row):
                     cell = table.cell(ri,ci); cell.text = value
+                    # Do not combine explicit dark text with the template's red header fill.
+                    cell.fill.solid()
+                    cell.fill.fore_color.rgb=RGBColor.from_string(brand.RED if ri==0 else brand.WHITE)
                     for p in cell.text_frame.paragraphs:
-                        p.font.name='Arial'; p.font.size=Pt(14); p.font.color.rgb=RGBColor.from_string(brand.INK)
+                        p.font.name='Arial'; p.font.size=Pt(14)
+                        p.font.color.rgb=RGBColor.from_string(brand.WHITE if ri==0 else brand.INK)
         elif visual:
             image = assets/f'visual-{index}.png'
             if content.plot: render_plot(content.plot, image)
@@ -115,7 +123,8 @@ def compose(spec, path, assets, pages=(), kinds=None):
                          'kind':kinds[index] if kinds else ('opening' if index==0 else 'content'),
                          'layout':slide.slide_layout.name,
                          'notes': notes, 'chart': content.chart.model_dump() if content.chart else None,
-                         'image_sha256': image_hash, 'table':content.table.model_dump() if content.table else None})
+                         'image_sha256': image_hash, 'table':content.table.model_dump() if content.table else None,
+                         'diagram':content.diagram.model_dump() if content.diagram else None, 'diagram_shapes':diagram_shapes})
     prs.save(path)
     return manifest
 
@@ -156,4 +165,5 @@ def audit(path, manifest):
             expected = [wanted['table']['headers']]+wanted['table']['rows']
             if len(tables)!=1 or [[c.text for c in row.cells] for row in tables[0].rows] != expected: fail(i, 'Table values differ.')
         elif tables: fail(i, 'Unexpected table.')
+        if not diagrams.matches(slide, wanted.get('diagram_shapes', [])): fail(i, 'Diagram labels or relationships differ.')
     return {'status': 'failed' if findings else 'passed', 'findings': findings}

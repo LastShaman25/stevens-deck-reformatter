@@ -13,12 +13,19 @@ class CreationRequest(Strict):
     source: Literal['topic', 'pdf'] = 'topic'
 
 
+class VisualPlan(Strict):
+    kind: Literal['text_only', 'diagram', 'chart', 'plot', 'equation', 'table', 'source_figure']
+    description: str = Field(min_length=1, max_length=800)
+    reason: str = Field(min_length=1, max_length=500)
+
+
 class OutlineSlide(Strict):
     kind: Literal['opening', 'content', 'closing'] = 'content'
     id: str = Field(pattern=r'^[a-zA-Z0-9_-]{1,40}$')
     title: str = Field(min_length=1, max_length=180)
     points: list[str] = Field(min_length=1, max_length=10)
     source_pages: list[int] = Field(default_factory=list, max_length=100)
+    visual: VisualPlan | None = None  # Older saved outlines remain readable.
 
 
 class Outline(Strict):
@@ -104,6 +111,22 @@ class TableSpec(Strict):
         return self
 
 
+class DiagramNode(Strict):
+    label: str = Field(min_length=1, max_length=45)
+    detail: str = Field(default='', max_length=100)
+
+
+class DiagramSpec(Strict):
+    kind: Literal['process', 'comparison']
+    nodes: list[DiagramNode] = Field(min_length=2, max_length=6)
+
+    @model_validator(mode='after')
+    def readable(self):
+        if len(self.nodes)>4 and any(len(n.detail)>55 for n in self.nodes):
+            raise ValueError('Five or six diagram steps need details of at most 55 characters each.')
+        return self
+
+
 class SlideSpec(Strict):
     id: str
     title: str = Field(min_length=1, max_length=180)
@@ -114,13 +137,14 @@ class SlideSpec(Strict):
     equation: str | None = Field(default=None, max_length=1000)
     figure_page: int | None = Field(default=None, ge=1, le=100)
     table: TableSpec | None = None
+    diagram: DiagramSpec | None = None
     citations: list[Citation] = Field(default_factory=list, max_length=20)
     assumptions: list[str] = Field(default_factory=list, max_length=20)
     @model_validator(mode='after')
     def readable(self):
         if sum(len(b) for b in self.bullets) > 1400 or any(len(b) > 500 for b in self.bullets):
             raise ValueError('Slide is too dense; shorten it or revise the outline.')
-        if sum(x is not None for x in (self.chart, self.plot, self.equation, self.figure_page, self.table)) > 1:
+        if sum(x is not None for x in (self.chart, self.plot, self.equation, self.figure_page, self.table, self.diagram)) > 1:
             raise ValueError('Use one major visual per slide.')
         return self
 

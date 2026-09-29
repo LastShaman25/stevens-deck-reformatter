@@ -216,7 +216,7 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
     {notice && <div role="status" className="mx-5 mt-4 rounded bg-stevens-lightblue p-3 text-sm">{notice}</div>}
     {!session ? <UploadStep onFile={upload} busy={busy} /> : <main className="mx-auto max-w-7xl p-5">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-bold">{session.name}</h2>
-        <p className="text-sm text-stevens-gray">{session.slide_count} source slides{generation ? ` → ${generation.built_slides} output slides` : ''}</p></div>
+        <p className="text-sm text-stevens-gray">{session.slide_count} source slides{generation ? ` → ${generation.built_slides} output slides` : ''}</p>{previewGeneration?.added_slides?.map(slide=><a key={slide.output_slide} className="text-sm underline" href={`#added-slide-${slide.output_slide}`}>View added Thank you closing · slide {slide.output_slide+1}</a>)}</div>
         <button className="btn-red" disabled={busy || !aiConfig?.configured} onClick={generate}>{busy ? 'Working…' : 'Redesign + QA'}</button></div>
       <div className="grid gap-5 lg:grid-cols-[1fr_330px]">
         <section className="card p-5">
@@ -282,7 +282,7 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
         <p className="mt-1 text-sm text-stevens-gray">Source slide {current+1}{outputs.length > 1 ? ` · Output part ${outputs.indexOf(output)+1} of ${outputs.length}` : ''} · {pageFindings.length} findings</p>
         <FindingsList key={`${reviewScope}:${current}:${output}`} findings={pageFindings} resolved={resolved} busy={busy} onApprove={approve} />
       </section>}
-      {previewGeneration?.added_slides?.map(slide => <section key={`added-${slide.output_slide}`} className="card mt-5 p-5">
+      {previewGeneration?.added_slides?.map(slide => <section id={`added-slide-${slide.output_slide}`} key={`added-${slide.output_slide}`} className="card mt-5 p-5">
         <h2 className="font-bold">Added closing slide · Output slide {slide.output_slide+1}</h2>
         <p className="mt-1 mb-3 text-sm text-stevens-gray">The required Stevens Thank you page follows all original content and is included in QA.</p>
         <Preview url={`/api/sessions/${sid}/slides/${slide.output_slide}/preview?variant=after&generation_id=${previewGeneration.generation_id}`} label="Thank you closing slide" />

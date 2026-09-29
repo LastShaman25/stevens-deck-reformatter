@@ -12,7 +12,7 @@ from slide_engine.preserve import CoverageError
 from . import grounded
 from .qa import artifact_coverage, brand_lint, render_verify
 
-POLICY_VERSION = 'required-closing-24'
+POLICY_VERSION = 'visual-planning-25'
 REQUIRED = ('plan_coverage', 'artifact_coverage', 'structural_formatting', 'render_verification')
 QA_REQUIRED = ('ai_visual_review', 'output_qa_coverage', 'output_qa_sequence',
                'output_qa_accuracy', 'output_qa_visual')

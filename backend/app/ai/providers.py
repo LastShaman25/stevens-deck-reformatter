@@ -9,7 +9,9 @@ from dotenv import dotenv_values
 
 ENV_FILE = Path(__file__).resolve().parents[2] / '.env'
 DEFAULTS = {'OPENAI_MODEL':'gpt-6-luna', 'ANTHROPIC_MODEL':'claude-sonnet-4-5', 'GEMINI_MODEL':'gemini-3.1-flash-lite'}
-PROVIDERS = {'openai':'OPENAI', 'anthropic':'ANTHROPIC', 'gemini':'GEMINI'}
+PROVIDERS = {'openai':'OPENAI', 'anthropic':'ANTHROPIC', 'gemini':'GEMINI', 'vercel':'AI_GATEWAY'}
+PLANNING_ROLES = ('planner','element_roles','outline','author','extractor')
+GATEWAY_DEFAULTS = {'planner':'anthropic/claude-sonnet-5.5', 'reviewer':'anthropic/claude-opus-5.5-fast'}
 
 
 def setting(name, default=''):
@@ -28,21 +30,27 @@ def configured(provider):
 
 
 def role_config(role):
-    explicit=setting('STEVENS_AI_PLANNER' if role in ('planner','element_roles','outline','author','extractor') else 'STEVENS_AI_REVIEWER','openai')
-    preferred=('openai','anthropic','gemini') if role in ('planner','element_roles') else ('openai','gemini','anthropic')
+    group='planner' if role in PLANNING_ROLES else 'reviewer'
+    explicit=setting('STEVENS_AI_'+group.upper(),setting('STEVENS_AI_PROVIDER','openai'))
+    preferred=('vercel','openai','anthropic','gemini') if role in ('planner','element_roles') else ('vercel','openai','gemini','anthropic')
     provider=next((p for p in preferred if configured(p)),preferred[0]) if explicit=='auto' else explicit
     if provider not in PROVIDERS:
         return {'provider':provider,'model':'','configured':False}
     name=PROVIDERS[provider]+'_MODEL'
-    result={'provider':provider,'model':setting(name,DEFAULTS[name]),'configured':configured(provider)}
+    default=GATEWAY_DEFAULTS[group] if provider=='vercel' else DEFAULTS[name]
+    model=setting('STEVENS_AI_'+group.upper()+'_MODEL',setting('STEVENS_AI_MODEL',setting(name,default)))
+    result={'provider':provider,'model':model,'configured':configured(provider)}
     if provider=='openai':result['reasoning_effort']=reasoning_effort(role)
+    if provider=='vercel':
+        result['reasoning_effort']=setting('AI_GATEWAY_REVIEW_REASONING_EFFORT','medium') if group=='reviewer' else setting('AI_GATEWAY_REASONING_EFFORT','low')
+        result['model_provider']=model.split('/')[0]
     return result
 
 
 def capabilities():
     planner,reviewer=role_config('planner'),role_config('reviewer')
     return {'planner':planner,'reviewer':reviewer,'configured':planner['configured'] and reviewer['configured'],
-            'independent_providers':planner['provider'] != reviewer['provider']}
+            'independent_providers':planner.get('model_provider',planner['provider']) != reviewer.get('model_provider',reviewer['provider'])}
 
 
 def reasoning_effort(role):
@@ -136,7 +144,7 @@ def _generate_once(role, system, payload, images=(), max_tokens=16000):
     config=role_config(role)
     base={'provider':config['provider'],'model':config['model']}
     if not config['configured']:
-        return {**base,'status':'not_configured','message':f'Configure the {role} provider key in backend/.env.'}
+        return {**base,'status':'not_configured','message':f'Configure {PROVIDERS.get(config["provider"],"provider")}_API_KEY for {role} in the server environment or backend/.env.'}
     encoded=[]
     failure_stage='request_preparation'
     try:
@@ -149,9 +157,26 @@ def _generate_once(role, system, payload, images=(), max_tokens=16000):
             data=Path(path).read_bytes()
             if len(data)>8*1024*1024:raise ValueError('Image too large')
             encoded.append((label,base64.b64encode(data).decode('ascii')))
-        prompt=json.dumps({k:v for k,v in payload.items() if k!='schema'} if config['provider']=='openai' else payload,ensure_ascii=False)
+        prompt=json.dumps({k:v for k,v in payload.items() if k!='schema'} if config['provider'] in ('openai','vercel') else payload,ensure_ascii=False)
         if len(prompt)>300000:raise ValueError('Slide payload exceeds the supported size')
-        if config['provider']=='openai':
+        if config['provider']=='vercel':
+            if not re.fullmatch(r'[A-Za-z0-9._-]+/[A-Za-z0-9._:/-]+',config['model']):raise ValueError('Use creator/model for AI Gateway')
+            effort=config['reasoning_effort']
+            if effort not in ('provider-default','none','minimal','low','medium','high','xhigh','max'):raise ValueError('Invalid reasoning effort')
+            base['reasoning_effort']=effort
+            content=[{'type':'text','text':prompt}]
+            for label,data in encoded:
+                content += [{'type':'text','text':label},
+                            {'type':'image_url','image_url':{'url':f'data:image/png;base64,{data}','detail':'high'}}]
+            fmt=({'type':'json_schema','json_schema':{'name':'slide_'+role,'strict':True,'schema':strict_schema(payload['schema'])}}
+                 if payload.get('schema') else {'type':'json_object'})
+            body={'model':config['model'],'messages':[{'role':'system','content':system},{'role':'user','content':content}],
+                  'response_format':fmt,'max_tokens':max_tokens,'stream':False}
+            if effort!='provider-default':body['reasoning']={'effort':effort}
+            response=requests.post('https://ai-gateway.vercel.sh/v1/chat/completions',
+                headers={'Authorization':'Bearer '+setting('AI_GATEWAY_API_KEY').strip()},
+                json=body,timeout=request_timeout)
+        elif config['provider']=='openai':
             content=[{'type':'input_text','text':prompt}]
             for label,data in encoded:
                 content += [{'type':'input_text','text':label},
@@ -195,8 +220,19 @@ def _generate_once(role, system, payload, images=(), max_tokens=16000):
         base['usage']=usage
         if sess:
             sess.tokens += int(usage.get('total_tokens') or usage.get('totalTokenCount') or
-                               (usage.get('input_tokens',0)+usage.get('output_tokens',0)))
-        if config['provider']=='openai':
+                               (usage.get('input_tokens',0)+usage.get('output_tokens',0)) or
+                               (usage.get('prompt_tokens',0)+usage.get('completion_tokens',0)))
+        if config['provider']=='vercel':
+            choice=data['choices'][0]
+            if choice.get('finish_reason')=='length':return {**base,'status':'truncated','message':'Planner/reviewer output reached its token limit.'}
+            message=choice.get('message',{})
+            if choice.get('finish_reason')=='content_filter' or message.get('refusal'):
+                return {**base,'status':'refused','message':'The provider declined this request.'}
+            if choice.get('finish_reason')!='stop':
+                return {**base,'status':'invalid_response','message':'The provider did not complete its response.'}
+            output=message['content']
+            if not isinstance(output,str):raise ValueError('Missing structured text')
+        elif config['provider']=='openai':
             if data.get('status')=='incomplete' and (data.get('incomplete_details') or {}).get('reason')=='max_output_tokens':
                 return {**base,'status':'truncated','message':'Planner/reviewer output reached its token limit.'}
             if data.get('status')!='completed':

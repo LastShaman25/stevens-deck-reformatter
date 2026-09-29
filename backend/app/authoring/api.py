@@ -100,7 +100,7 @@ def edit_content(sid: str, body: ContentEdit):
         if body.revision != sess.revision_version: raise ValueError('Content changed. Reload before editing.')
         sess.revision_version += 1
         sess.generation = None
-        return service.generate(sess, body.deck)
+        return service.generate(sess, body.deck, content_edit=True)
     return action(sid, regenerate)
 
 

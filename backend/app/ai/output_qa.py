@@ -34,6 +34,12 @@ already-matching template. A removal reason never excuses lost meaningful conten
 An authorized_addition is the user-required final Thank you page, with no source original.
 Compare it against its explicit authorization and the approved statue closing template;
 do not flag that exact authorized addition as invented content. It must be last and reviewed.
+For authored decks, the approved outline includes a visual plan for each slide. Check
+that the rendered slide implements the specified visual and its purpose, rather than
+silently replacing it with bullets. Verify diagram relationships and labels against
+the evidence just as you verify chart data. Text-only is valid when explicitly planned.
+An explicit user_visual_overrides entry authorizes the user's later choice of visual
+type instead of the outline choice; it does not authorize unsupported factual changes.
 Speaker notes are supplied separately and are intentionally not visible in screenshots:
 compare source notes against output notes, never demand that notes be placed on-slide.
 For redesign, inspect each slide's note_comparison.original and note_comparison.output;

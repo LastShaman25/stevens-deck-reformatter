@@ -351,6 +351,7 @@ def test_authoring_api_approval_release_identity_and_cleanup(monkeypatch):
     deck=DeckSpec(slides=[SlideSpec(id=s.id,title=s.title,bullets=['One verified statement.']) for s in outline.slides])
     result=admin.put(f'/api/jobs/{sid}/content',json={'revision':1,'deck':deck.model_dump()})
     assert result.status_code==200,result.text
+    assert service.source_evidence(sessions.get(sid))['user_visual_overrides'][0]['kind']=='text_only'
     record=result.json()['generation'];assert record['state']=='ready',record['findings']
     response=admin.get(f"/api/jobs/{sid}/download?generation_id={record['generation_id']}")
     assert response.status_code==200
@@ -362,7 +363,8 @@ def test_authoring_api_approval_release_identity_and_cleanup(monkeypatch):
     assert not directory.exists()
 
 
-def test_bounded_visual_repair_rerenders_and_reviews_final_candidate(monkeypatch):
+@pytest.mark.parametrize('criterion',['visual_legibility','content_presence'])
+def test_bounded_visual_repair_rerenders_and_reviews_final_candidate(monkeypatch,criterion):
     sess=service.create(CreationRequest(topic='Explain x',audience='Students'))
     service.save_outline(sess,simple_outline(1),0);service.approve(sess,1)
     renders=[]
@@ -380,7 +382,7 @@ def test_bounded_visual_repair_rerenders_and_reviews_final_candidate(monkeypatch
             item=payload.get('slide',payload.get('current_slide'))
             return {'status':'completed','data':SlideSpec(id=item['id'],title=item['title'],bullets=['A clear explanation.']).model_dump()}
         from rubric_fixtures import repair_evidence
-        findings=[{**repair_evidence(),'slides':[1],'criterion':'visual_legibility','severity':'blocking','accuracy':'not_applicable',
+        findings=[{**repair_evidence(),'slides':[1],'criterion':criterion,'severity':'blocking','accuracy':'not_applicable',
                    'message':'Synthetic first-pass legibility defect','evidence':'Synthetic fixture'}] if len(renders)==1 else []
         return {'status':'completed','data':qa_review(payload,findings)}
     monkeypatch.setattr(service.render_verify,'check',render);monkeypatch.setattr(providers,'generate',provider)

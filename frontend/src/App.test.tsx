@@ -27,6 +27,7 @@ test('added closing has its own output preview without claiming it was a source 
     added_slides:[{output_slide:1,kind:'closing',text:'Thank you!',authorization:'Required closing'}]};
   vi.stubGlobal('fetch',vi.fn(()=>response({...session,generation})));render(<App/>);
   expect(await screen.findByText('Added closing slide · Output slide 2')).toBeVisible();
+  expect(screen.getByRole('link',{name:'View added Thank you closing · slide 2'})).toHaveAttribute('href','#added-slide-1');
   expect(screen.getByAltText('Thank you closing slide')).toHaveAttribute('src','/api/sessions/test/slides/1/preview?variant=after&generation_id=g');
   expect(screen.getByLabelText('Source slide').querySelectorAll('option')).toHaveLength(1);
 });

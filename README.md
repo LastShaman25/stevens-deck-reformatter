@@ -52,22 +52,22 @@ Missing content, unsupported required objects, failed checks, or changed files b
 
 ## AI setup and retention
 
-Create `backend/.env` from `.env.example` if it does not exist. Enter `OPENAI_API_KEY` locally; never paste it into the application or commit the file. Both planning and visual review use **`gpt-6-luna`** through the OpenAI Responses API. Account/model access must be confirmed through **Test AI connection**. The local configuration is:
+Create `backend/.env` from `.env.example` if it does not exist. Enter `AI_GATEWAY_API_KEY` locally; never paste credentials into the application or commit the file. The recommended configuration uses **Claude Sonnet 5.5 for planning, redesign and authoring**, and **Claude Opus 5.5 Fast for visual and output QA**, through Vercel AI Gateway:
 
 ```dotenv
-OPENAI_API_KEY=
-OPENAI_MODEL=gpt-6-luna
-OPENAI_REASONING_EFFORT=none
-OPENAI_REVIEW_REASONING_EFFORT=low
-STEVENS_AI_PLANNER=openai
-STEVENS_AI_REVIEWER=openai
+AI_GATEWAY_API_KEY=
+STEVENS_AI_PROVIDER=vercel
+STEVENS_AI_PLANNER_MODEL=anthropic/claude-sonnet-5.5
+STEVENS_AI_REVIEWER_MODEL=anthropic/claude-opus-5.5-fast
+AI_GATEWAY_REASONING_EFFORT=low
+AI_GATEWAY_REVIEW_REASONING_EFFORT=medium
 ```
 
-Planning defaults to `none`; visual/logo and ordered QA default to `low`, after live checks exposed false logo-identity judgments at `none`. `OPENAI_REVIEW_REASONING_EFFORT` overrides reviewer effort separately; higher explicit global effort is preserved when that override is absent. The model remains GPT-6 Luna. Low reasoning uses additional output tokens; the model still receives the full object inventory and high-detail slide images. Responses use strict JSON schemas, bounded output tokens, standard service tier, and `store=false`. API failures and refusals block verification; no automatic provider or model fallback occurs. [Official model settings](https://developers.openai.com/api/docs/models/gpt-6-luna).
+Clear old `STEVENS_AI_PLANNER` / `STEVENS_AI_REVIEWER` provider overrides when switching, or set both to `vercel`. Models can be changed without code; role-specific model variables override the shared `STEVENS_AI_MODEL`. Nonempty process environment settings override the matching `.env` entry. Use **Refresh AI configuration** after editing. Model availability and key access can be checked through **Test AI connection**. See [Gateway configuration, model comparison and deployment notes](docs/AI_GATEWAY.md).
 
-One OpenAI key supplies both roles, in separate calls. The UI states that the same provider performs planning and review. The Anthropic and Gemini adapters remain available only when selected through `STEVENS_AI_PLANNER` / `STEVENS_AI_REVIEWER`. Supported choices are `openai`, `anthropic`, `gemini`, and `auto`; explicit `auto` prefers a configured OpenAI key, then legacy providers. Nonempty process environment settings override `.env`. Use **Refresh AI configuration** after editing the file; a server restart is unnecessary for key changes.
+One Gateway key supplies both models in separate calls. The recommended models share Anthropic as their model provider; separate calls do not imply independent model families. The direct OpenAI, Anthropic and Gemini adapters remain available. Supported provider choices are `vercel`, `openai`, `anthropic`, `gemini`, and explicit `auto` (which prefers a configured Gateway key). Requests use strict JSON schemas, high-detail slide images and bounded timeouts/tokens. API failures, refusals and incomplete responses block verification; the app never silently switches models after an error.
 
-Select **AI redesign + full check**, then **Generate and verify**. This sends slide text, layout instructions, original previews when available, and generated slide images to the displayed providers. Invalid responses, quota/authentication failures, missing required checks, and content damage block AI verification. Repairs are accepted only when the combined checks improve without increasing deterministic blocking defects. Source words, emphasis, editable objects, charts, links, and notes are independently checked after edits. Visual AI judgment can still be wrong; unresolved review findings need inspection.
+Select **Generate and verify**. This sends slide text, layout instructions, original previews when available, and generated slide images to the displayed providers. Invalid responses, quota/authentication failures, missing required checks, and content damage block AI verification. Repairs are accepted only when the combined checks improve without increasing deterministic blocking defects. Source words, emphasis, editable objects, charts, links, and notes are independently checked after edits. Visual AI judgment can still be wrong; unresolved review findings need inspection.
 
 Uploaded presentations have one workflow: **Redesign + QA**. Every generation runs AI redesign and mandatory visual/output QA; there is no mode selector or optional per-slide QA checkbox. The public generation API defaults to `ai` and rejects `preserve`. `STEVENS_AI_MAX_CALLS=160` and `STEVENS_AI_MAX_TOKENS=500000` bound provider use per processing job; request timeouts also apply. There is no automatic model escalation or benchmark learning. `STEVENS_OFFLINE=1` disables providers. Offline or unavailable providers block verified release. Native preservation remains an internal composition and testing component. The old atom-reconstruction Claude planner is not used by the new native-object AI pipeline.
 

@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 import fitz
 from pydantic import BaseModel, Field
-from .models import CreationRequest, Outline, OutlineSlide, SlideSpec, DeckSpec
+from .models import CreationRequest, Outline, OutlineSlide, SlideSpec, DeckSpec, VisualPlan
 from . import composer
 from .. import sessions, generations, grounded
 from ..ai import providers, output_qa, rubric
@@ -23,7 +23,7 @@ def hash_json(data):
     return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
-def call(sess, role, instruction, data, schema, images=()):
+def call(sess, role, instruction, data, schema, images=(), validate=None):
     sess.ensure_active()
     data = dict(data)
     for attempt in range(2):
@@ -31,7 +31,9 @@ def call(sess, role, instruction, data, schema, images=()):
         sess.ensure_active()
         if response['status'] != 'completed': raise ValueError(response.get('message', 'AI request failed.'))
         try:
-            return schema.model_validate(response['data'])
+            result = schema.model_validate(response['data'])
+            if validate: validate(result)
+            return result
         except ValueError as exc:
             if attempt: raise ValueError('The model returned invalid structured content. Revise the request or retry.')
             data['previous_response'] = response['data']
@@ -93,7 +95,7 @@ def ingest_pdf(sess, data):
 
 def source_evidence(sess):
     return {'request':sess.creation['request'], 'pages':[{k:v for k,v in p.items() if k != 'image'} for p in sess.creation['pages']],
-            'outline':sess.creation['outline']}
+            'outline':sess.creation['outline'], 'user_visual_overrides':sess.creation.get('user_visual_overrides',[])}
 
 
 def plan(sess):
@@ -107,14 +109,51 @@ detailed adds evidence/examples. Do not pad, silently truncate, or force fixed q
 Provide stable unique IDs, title, key points, accurate source_pages and a count rationale.
 Make a coherent introduction -> explanation/evidence -> conclusion sequence. Spread plots,
 charts and equations onto DIFFERENT slides where requested: exactly one major visual per slide.
+For EVERY slide supply visual with kind, description (what to show and its evidence),
+and reason (how it helps understanding, or why text is clearer). Actively choose visuals
+without waiting for the user to request them: diagram for a supported process/comparison,
+chart for supplied numerical data, plot for a mathematical relationship, equation for
+key mathematics, table for structured comparisons, source_figure for a relevant supplied
+PDF page, or text_only when a visual would not help. Do not default the whole deck to
+bullets or force a visual quota. Never invent measurements, relationships or image assets.
+For source_figure identify the page in description and include it in source_pages.
+Diagrams support 2–6 concise steps or alternatives; split longer processes across slides.
 Include a dedicated opening slide (kind=opening) with the presentation title and a
 short purpose, then content slides (kind=content), then a dedicated closing slide
 (kind=closing), titled Thank you!, with supported takeaways or next steps. Opening/closing must be text-only,
 with at most two short points and 25 words each. Count BOTH within the adaptive total.
-Do not put the first lesson on the opening page. All pages must inform planning.''', source_evidence(sess), Outline)
+Do not put the first lesson on the opening page. All pages must inform planning.''', source_evidence(sess), Outline,
+        validate=validate_visual_plans)
     outline = with_bookends(outline)
     save_outline(sess, outline, sess.creation['revision'])
     return public(sess)
+
+
+def validate_visual_plans(outline):
+    for item in outline.slides:
+        if item.visual is None:
+            raise ValueError(f'Slide {item.id} needs an explicit visual decision, including text_only when appropriate.')
+        if item.kind != 'content' and item.visual.kind != 'text_only':
+            raise ValueError('Opening and closing use the template artwork, with text_only content.')
+        if item.visual.kind == 'source_figure' and not item.source_pages:
+            raise ValueError('A source figure needs at least one source page.')
+
+
+def validate_visual_content(item, slide):
+    fields = ('diagram', 'chart', 'plot', 'equation', 'table', 'figure_page')
+    actual = next((name for name in fields if getattr(slide, name) is not None), 'text_only')
+    if item.visual:
+        expected = 'figure_page' if item.visual.kind == 'source_figure' else item.visual.kind
+        if actual != expected:
+            raise ValueError(f'Slide {item.id} must implement its approved {item.visual.kind} visual plan; got {actual}.')
+    if slide.figure_page is not None and slide.figure_page not in item.source_pages:
+        raise ValueError('The source figure must use a page assigned to this outline slide.')
+
+
+def validate_repair_visual(before, after):
+    fields = ('diagram', 'chart', 'plot', 'equation', 'table', 'figure_page')
+    if [f for f in fields if getattr(before, f) is not None] != [f for f in fields if getattr(after, f) is not None]:
+        raise ValueError('Visual repair must retain the existing visual type.')
 
 
 def with_bookends(outline):
@@ -128,10 +167,12 @@ def with_bookends(outline):
         return value
     if not any(s.kind == 'opening' for s in slides):
         slides.insert(0, OutlineSlide(id=unique_id('opening'), kind='opening',
-            title=outline.title, points=['Introduction and purpose']))
+            title=outline.title, points=['Introduction and purpose'], visual=VisualPlan(kind='text_only',
+            description='Title on the mostly red Stevens opening.', reason='Use the approved template artwork.')))
     if not any(s.kind == 'closing' for s in slides):
         slides.append(OutlineSlide(id=unique_id('closing'), kind='closing',
-            title='Thank you', points=['Questions and discussion']))
+            title='Thank you', points=['Questions and discussion'], visual=VisualPlan(kind='text_only',
+            description='Thank you on the statue-photo Stevens closing.', reason='Use the approved template artwork.')))
     slides=[s.model_copy(update={'title':'Thank you!'}) if s.kind=='closing' else s for s in slides]
     return Outline(title=outline.title, rationale=outline.rationale, slides=slides)
 
@@ -147,7 +188,10 @@ def save_outline(sess, outline, expected_revision):
         raise ValueError('The final closing slide must be titled Thank you!')
     available = {p['page'] for p in sess.creation['pages']}
     if any(not set(s.source_pages) <= available for s in outline.slides): raise ValueError('Outline references a missing source page.')
-    sess.creation.update(outline=outline.model_dump(), revision=expected_revision+1, approved_hash=None, deck=None, status='outline')
+    for item in outline.slides:
+        if item.visual:
+            validate_visual_plans(Outline(title=outline.title, rationale=outline.rationale, slides=[item]))
+    sess.creation.update(outline=outline.model_dump(), revision=expected_revision+1, approved_hash=None, deck=None, status='outline',user_visual_overrides=[])
     sess.revision_version += 1
     sess.generation = None
     persist(sess)
@@ -191,7 +235,7 @@ def validate_citations(sess, deck):
     return {'status':'failed' if any(f['severity']=='blocking' for f in findings) else 'needs_review' if findings else 'passed', 'findings':findings}
 
 
-def generate(sess, supplied_deck=None, repair_remaining=1):
+def generate(sess, supplied_deck=None, repair_remaining=1, content_edit=False):
     c = sess.creation
     if not c['outline'] or c['approved_hash'] != hash_json(c['outline']): raise ValueError('Approve the current outline before generating.')
     sess.ensure_active()
@@ -199,6 +243,7 @@ def generate(sess, supplied_deck=None, repair_remaining=1):
     providers.reserve_output_qa(sess, len(outline.slides))
     deck = supplied_deck
     if deck is None:
+        c['user_visual_overrides']=[]
         slides = []
         for i, item in enumerate(outline.slides):
             sess.progress = {'stage':'authoring_content', 'slide':i+1, 'total':len(outline.slides)}
@@ -207,9 +252,16 @@ def generate(sess, supplied_deck=None, repair_remaining=1):
 Use readable concise bullets (prefer <=70 words, <=35 with a visual), meaningful notes,
 and at most one visual. Use native chart specs for data, plot specs for functions (Python-style
 math expressions such as sin(x), never code), equation for LaTeX math without dollar delimiters,
-table for an editable table, or figure_page for a source page figure. Null ALL unused visuals,
+table for an editable table, diagram for an editable process (ordered steps) or comparison
+(parallel alternatives, no implied flow), or figure_page for a source page figure.
+Implement the approved slide.visual decision and description exactly. A planned visual
+must not silently become bullets. Diagram labels/details must be concise and supported.
+Include every planned process step, including its end condition (2–6 nodes).
+Null ALL unused visuals,
 including equation (use null, not an empty string). Do not invent datasets. Label
-illustrative data explicitly in notes/assumptions. Cite exact short quotations from source pages.
+illustrative data explicitly on the slide and in notes. Reserve assumptions for NEW
+unverified assumptions you introduced. User-supplied examples and their explicit
+illustrative disclaimers are source information, not new assumptions. Cite exact short quotations from source pages.
 The schema allows one major visual. x/y/matrix arrays may be empty when unused.
 Never add slides beyond the approved outline. For opening/closing kinds use text only:
 at most two short bullets totaling 25 words, with no chart, plot, equation, figure or table.
@@ -217,7 +269,8 @@ The opening introduces the presentation; the closing summarizes supported takeaw
 or invites questions. Keep content suitable for the specified audience.''',
                 {'request':c['request'], 'outline':c['outline'], 'slide':item.model_dump(),
                  'source_pages':[{k:v for k,v in p.items() if k!='image'} for p in pages]}, SlideSpec,
-                images=[(f"PDF page {p['page']}", p['image']) for p in pages[:6]])
+                images=[(f"PDF page {p['page']}", p['image']) for p in pages[:6]],
+                validate=lambda result: validate_visual_content(item, result))
             if slide.id != item.id or slide.title != item.title: raise ValueError('Authored slide does not match approved outline.')
             slides.append(slide)
         deck = DeckSpec(slides=slides)
@@ -225,9 +278,14 @@ or invites questions. Keep content suitable for the specified audience.''',
         raise ValueError('Edited content must match the approved outline IDs, titles, and order.')
     for item, slide in zip(outline.slides, deck.slides):
         if item.kind in ('opening', 'closing') and (any(v is not None for v in
-                (slide.chart, slide.plot, slide.equation, slide.figure_page, slide.table)) or
+                (slide.chart, slide.plot, slide.equation, slide.figure_page, slide.table, slide.diagram)) or
                 len(slide.bullets) > 2 or sum(len(b) for b in slide.bullets) > 180):
             raise ValueError('Opening and closing pages need text only, at most two short points (180 characters total). Edit the outline/content and retry.')
+    if content_edit:
+        c['user_visual_overrides']=[{'slide_id':slide.id,'kind':next((f for f in
+            ('diagram','chart','plot','equation','table','figure_page') if getattr(slide,f) is not None),'text_only'),
+            'authorization':'The user explicitly saved this slide content and visual through the editor.'}
+            for slide in deck.slides]
     c['deck'] = deck.model_dump()
     c['status'] = 'generating'; persist(sess)
     gid = uuid.uuid4().hex
@@ -256,21 +314,27 @@ or invites questions. Keep content suitable for the specified audience.''',
              'message':f'Generation could not complete ({type(exc).__name__}). Inspect the outline/content or provider configuration and retry.'}]})
     sess.ensure_active()
     generations.settle(record); generations.save(record)
-    repairable = [f for f in record['findings'] if f['check']=='output_qa_visual' and f['code']=='OUTPUT_VISUAL' and f.get('severity')!='warning']
+    repairable = [f for f in record['findings']
+                  if f['check'] in ('output_qa_visual','output_qa_accuracy','output_qa_sequence')
+                  and f.get('required_correction') and f.get('severity')!='warning']
     if repair_remaining and repairable:
         record['progress'] = {'stage':'repairing_visual_findings'}
         sess.progress = record['progress']
         repaired = []
         for i, slide in enumerate(deck.slides):
-            issues = [f for f in repairable if f.get('output_slide')==i or i in f.get('affected_slides',[]) or not f.get('affected_slides')]
+            issues = [f for f in repairable if f.get('output_slide')==i or i in f.get('affected_slides',[])
+                      or (f.get('output_slide') is None and not f.get('affected_slides'))]
             if not issues:
                 repaired.append(slide); continue
-            corrected = call(sess, 'author', '''Repair only the reported visual problems. Keep the same slide ID,
-title, facts, source quotations, and mathematical meaning. Keep only one major visual.
+            corrected = call(sess, 'author', '''Repair the reported QA problems, including missing required
+evidence in the text or visual. Keep the same slide ID, title, source quotations and
+mathematical meaning. Restore omitted source facts; never invent replacements. Keep only one major visual.
 Use plot tick_values/tick_labels and annotations when specific key points are requested.
 Use clear LaTeX math spacing (for example \\,\\mathrm{d}x). Keep body concise and readable.
-Do not resolve problems by deleting required evidence or introducing claims.''',
-                {'current_slide':slide.model_dump(),'issues':issues,'source':source_evidence(sess)},SlideSpec)
+Do not resolve problems by deleting required evidence or introducing claims. Preserve
+the existing visual type and its evidence; repair its layout, labels or presentation.''',
+                {'current_slide':slide.model_dump(),'issues':issues,'source':source_evidence(sess)},SlideSpec,
+                validate=lambda result: validate_repair_visual(slide, result))
             if corrected.id != slide.id or corrected.title != slide.title:
                 raise ValueError('Visual repair attempted an unapproved outline change.')
             repaired.append(corrected)

@@ -3,7 +3,7 @@ from typing import Literal
 from slide_engine.template_policy import TEMPLATE_ROLE_RULE
 from pydantic import BaseModel, ConfigDict, Field
 
-VERSION = 'required-closing-15'
+VERSION = 'visual-planning-16'
 Criterion = Literal['content_presence', 'content_accuracy', 'structure_sequence',
                     'spatial_layout', 'visual_legibility', 'graphical_fidelity',
                     'brand_consistency', 'instruction_compliance']
