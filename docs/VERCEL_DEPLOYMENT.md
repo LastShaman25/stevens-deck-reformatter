@@ -118,7 +118,7 @@ Local mode remains available. No existing SQLite database is uploaded automatica
 python tools/migrate_accounts.py /path/to/accounts.sqlite3
 ```
 
-Set `DATABASE_URL` and `STEVENS_STORAGE_NAMESPACE` securely in that shell first. The command opens SQLite read-only and refuses to overwrite a nonempty target. It copies users, invitation-code hashes and invitations; it intentionally invalidates existing logins and does not transfer local presentations or active jobs. Decide whether Preview should instead use fresh synthetic accounts. Never put the SQLite file in the repository.
+Set `DATABASE_URL` and `STEVENS_STORAGE_NAMESPACE` securely in that shell first. The command opens SQLite read-only and refuses to overwrite a nonempty target or import the known default `admin` code. Rotate that code locally before migration. It copies users, invitation-code hashes and invitations; it intentionally invalidates existing logins and does not transfer local presentations or active jobs. Decide whether Preview should instead use fresh synthetic accounts. Never put the SQLite file in the repository.
 
 ## Execution, transfers and cleanup
 

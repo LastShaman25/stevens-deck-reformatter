@@ -184,6 +184,31 @@ def test_large_previews_use_private_short_lived_object_urls(shared):
     assert response.headers['cache-control']=='no-store'
 
 
+def test_account_migration_preserves_users_without_copying_sessions(shared,tmp_path):
+    import sqlite3, hashlib
+    from tools.migrate_accounts import migrate
+    source=tmp_path/'accounts.sqlite3'
+    with sqlite3.connect(source) as con:
+        con.executescript('''CREATE TABLE users(id,email,issuer,subject,role,active);
+            CREATE TABLE codes(token,user_id); CREATE TABLE invites(token,email,role,expires);
+            CREATE TABLE settings(key,value);''')
+        con.execute("INSERT INTO users VALUES ('migrated','Synthetic account','invitation','migrated','admin',1)")
+        con.execute('INSERT INTO codes VALUES (?,?)',(hashlib.sha256(b'synthetic-long-code').hexdigest(),'migrated'))
+        con.execute("INSERT INTO settings VALUES ('codes_bootstrapped','1')")
+    before=source.read_bytes()
+    with pytest.raises(ValueError,match='already contains users'):migrate(source)
+    with db.connect() as con:
+        for table in ('codes','logins','users','settings'):con.execute('DELETE FROM '+table)
+    migrate(source)
+    assert source.read_bytes()==before
+    with db.connect() as con:
+        assert con.execute('SELECT id,role FROM users').fetchone()=={'id':'migrated','role':'admin'}
+        assert con.execute('SELECT count(*) AS n FROM logins').fetchone()['n']==0
+    with sqlite3.connect(source) as con:
+        con.execute('UPDATE codes SET token=?',(hashlib.sha256(b'admin').hexdigest(),))
+    with pytest.raises(ValueError,match='default admin'):migrate(source)
+
+
 def test_real_subprocess_import_uses_shared_state(shared,monkeypatch):
     """No in-process worker substitution: child imports and talks HTTP to S3."""
     import fitz

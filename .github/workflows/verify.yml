@@ -1,5 +1,8 @@
 name: Verify Slide Studio
 on: [push, pull_request]
+concurrency:
+  group: verify-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 jobs:
   verification:
     runs-on: windows-latest

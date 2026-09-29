@@ -428,7 +428,9 @@ async def _guard(request: Request, call_next):
                 return JSONResponse({'detail': 'Job not found or expired.'}, status_code=404)
         if cloud.enabled():
             from .cloud.api import dispatch
-            response=await dispatch(request,user)
+            try:response=await dispatch(request,user)
+            except HTTPException as exc:return JSONResponse({'detail':exc.detail},status_code=exc.status_code)
+            except ValueError as exc:return JSONResponse({'detail':str(exc)},status_code=409)
             if response is not None:return response
         response = await call_next(request)
         response.headers['Cache-Control'] = 'no-store'

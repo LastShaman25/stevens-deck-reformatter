@@ -4,6 +4,7 @@ Run before starting the deployment; set DATABASE_URL/STEVENS_STORAGE_NAMESPACE.
 No presentations, active jobs, login sessions or cookie secrets are migrated.
 """
 import argparse
+import hashlib
 import sqlite3
 import sys
 from pathlib import Path
@@ -15,6 +16,8 @@ from app.cloud import db
 def migrate(path):
     source=sqlite3.connect(Path(path).resolve().as_uri()+'?mode=ro',uri=True)
     try:
+        if source.execute('SELECT 1 FROM codes WHERE token=?',(hashlib.sha256(b'admin').hexdigest(),)).fetchone():
+            raise ValueError('Rotate the local default admin invitation code before migrating it to the cloud.')
         with db.connect() as con:
             con.execute('SELECT pg_advisory_xact_lock(hashtext(current_schema() || \':accounts\'))')
             if con.execute('SELECT 1 FROM users LIMIT 1').fetchone():
