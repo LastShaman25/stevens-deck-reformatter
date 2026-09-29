@@ -4,6 +4,7 @@ import { UploadStep } from "./steps/UploadStep";
 import { FindingsList, findingSource } from './components/FindingsList';
 import type { AIConfiguration, Generation, Revision, SessionInfo } from "./types";
 import {apiFetch} from './http';
+import {DownloadButton} from './components/DownloadButton';
 import {ExpandablePreview} from './components/ExpandablePreview';
 
 async function request<T>(path: string, body?: unknown, method = "POST"): Promise<T> {
@@ -15,6 +16,11 @@ async function request<T>(path: string, body?: unknown, method = "POST"): Promis
   return value;
 }
 const empty: Revision = {tags: [], instruction: "", reset_emphasis: false};
+function revisionPrompt(revision: Revision) {
+  const legacy: Record<string,string> = {split:'Split this slide.',dense:'Reduce crowding and improve spacing.',layout:'Improve the layout.',overlap:'Fix overlapping elements.',diagram:'Preserve the diagram.',emphasis:'Restore source emphasis.'};
+  return [revision.instruction, ...revision.tags.map(tag=>legacy[tag]).filter(Boolean),
+    ...(revision.reset_emphasis && !revision.tags.includes('emphasis') ? [legacy.emphasis] : [])].filter(Boolean).join('\n\n');
+}
 
 function Preview({url, label, placeholder}: {url: string | null; label: string; placeholder?: string}) {
   const [failed, setFailed] = useState(false);
@@ -35,6 +41,7 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState('');
+  const [allFindings, setAllFindings] = useState(false);
   const [saved, setSaved] = useState(false);
   const [aiConfig,setAiConfig] = useState<AIConfiguration>();
   const [connection,setConnection] = useState<Record<string,{status:string; message?:string}>>();
@@ -211,6 +218,15 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
     ? f.output_slide === output : current>=0 && findingSource(f) === current) ?? [];
   const deckFindings = generation?.findings.filter(f => f.output_slide == null && !f.affected_slides?.length && findingSource(f) == null) ?? [];
   const reviewScope = `${session?.session_id}:${generation?.generation_id}:${generation?.candidate_sha256}`;
+  function findingTargets(f: import('./types').Finding) {
+    const source = findingSource(f);
+    return [...new Set(f.affected_slides?.length ? f.affected_slides : f.output_slide != null ? [f.output_slide] : source != null ? previewGeneration?.source_to_output_slides[String(source)] ?? [source] : [])].filter(i => i>=0 && i<reviewSlides.length);
+  }
+  function openFindingSlide(index: number) {
+    navigateSlide(index);
+    document.getElementById('slide-review')?.scrollIntoView?.({behavior:'smooth',block:'start'});
+    document.getElementById('slide-review')?.focus({preventScroll:true});
+  }
   const sid = session?.session_id;
   return <div className="min-h-screen bg-[#f5f7fa] text-stevens-ink">
     <header className="flex items-center justify-between border-b border-stevens-lightgray bg-white px-6 py-4">
@@ -233,7 +249,7 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
         <p className="text-sm text-stevens-gray">{session.slide_count} source slides{previewGeneration ? ` → ${previewGeneration.built_slides} output slides` : ''}</p>{previewGeneration?.added_slides?.map(slide=><a key={slide.output_slide} className="text-sm underline" href="#slide-review" onClick={()=>navigateSlide(slide.output_slide)}>View added Thank you closing · slide {slide.output_slide+1}</a>)}</div>
         <button className="btn-red" disabled={busy || !aiConfig?.configured} onClick={generate}>{busy ? 'Working…' : 'Redesign + QA'}</button></div>
       <div className="grid gap-5 lg:grid-cols-[1fr_330px]">
-        <section id="slide-review" className="card p-5">
+        <section id="slide-review" tabIndex={-1} className="card p-5">
           <nav aria-label="Slide navigation" className="mb-4 flex flex-wrap items-center justify-between gap-2">
             <button aria-label="Previous slide" className="btn-ghost disabled:cursor-not-allowed disabled:opacity-40" disabled={busy || reviewIndex === 0} onClick={() => navigateSlide(reviewIndex-1)}>
               <span aria-hidden="true">←</span> Previous slide
@@ -251,13 +267,11 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
             <Preview url={reviewingOutput ? `/api/sessions/${sid}/slides/${output}/preview?variant=after&generation_id=${previewGeneration!.generation_id}` : null} label="Generated candidate" />
           </div>
           {previewIsPrevious && <p role="status" className="mt-3 text-sm text-amber-800">Showing the previous candidate. Your latest instructions are not applied yet; generate again to update and verify it.</p>}
-          {!previewIsPrevious && previewGeneration && !previewGeneration.download_allowed && <p className="mt-3 text-sm text-amber-800">Deck download blocked. Open findings on the affected slides below; this message does not mean the displayed slide failed.</p>}
+          {!previewIsPrevious && previewGeneration && !generation?.download_allowed && <p className="mt-3 text-sm text-amber-800">Deck download blocked. Open findings on the affected slides below; this message does not mean the displayed slide failed.</p>}
           <p className="mt-3 text-xs text-stevens-gray">Previews show real renders when available. Review decisions apply to a specific generated file.</p>
           {current>=0 ? <fieldset disabled={busy} className="mt-5"><legend className="text-sm font-bold">Corrections</legend>
-            <div className="mt-2 flex flex-wrap gap-2">{[['split','Split slide'],['dense','Too dense'],['layout','Layout'],['overlap','Overlap'],['diagram','Preserve diagram'],['emphasis','Source emphasis']].map(([id,label]) =>
-              <button key={id} aria-pressed={rev.tags.includes(id)} className={rev.tags.includes(id) ? 'btn-red' : 'btn-ghost'} onClick={() => changeRevision({...rev, tags:rev.tags.includes(id) ? rev.tags.filter(x => x !== id) : [...rev.tags,id], reset_emphasis: id === 'emphasis' ? true : rev.reset_emphasis})}>{label}</button>)}</div>
             <label className="mt-4 block text-sm">Redesign instructions
-              <textarea aria-label="Reviewer note" className="mt-1 w-full rounded border p-3" rows={3} value={rev.instruction} onChange={e => changeRevision({...rev,instruction:e.target.value})} /></label>
+              <textarea aria-label="Reviewer note" className="mt-1 w-full rounded border p-3" rows={4} placeholder="Describe what you want changed on this slide…" value={revisionPrompt(rev)} onChange={e => changeRevision({tags:[],reset_emphasis:false,instruction:e.target.value})} /></label>
             <p className="mt-1 text-xs text-stevens-gray">Instructions guide layout and styling. Original wording, chart data, notes, and links remain protected.</p>
             <button className="btn-ghost mt-2" onClick={apply}>Save revision</button>
           </fieldset> : <p className="mt-5 text-sm text-stevens-gray">This added page is included in mandatory QA. Its findings appear below.</p>}
@@ -265,14 +279,13 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
           {generation?.corrections.filter(c => c.index === current).flatMap(c => c.actions).map((a,i) => <p className="mt-2 text-sm" key={i}>{a.action}: <b>{a.status}</b> — {a.message}</p>)}
         </section>
         <aside className="card p-5"><h2 className="text-lg font-bold">Verification</h2>{generation&&<QaExecution generation={generation}/>}
-          <p role="status" className="mt-2 font-semibold">{busy ? 'Processing…' : generation ? generation.state === 'ready' && generation.findings.some(f => f.severity === 'warning') ? 'Ready with suggestions' : generation.state.replace('_',' ') : previewGeneration ? 'Regeneration required' : 'Not yet generated'}</p>
+          <p role="status" className="mt-2 font-semibold">{busy ? 'Processing…' : generation ? generation.state === 'ready' && generation.human_decisions.length ? 'Ready after human review' : generation.state === 'ready' && generation.findings.some(f => f.severity === 'warning') ? 'Ready with suggestions' : generation.state.replace('_',' ') : previewGeneration ? 'Regeneration required' : 'Not yet generated'}</p>
           {generating && generation?.progress && <p role="status" className="mt-2 text-sm">{generation.progress.stage.replace(/_/g,' ')}{generation.progress.output_slide!==undefined ? ` · output slide ${generation.progress.output_slide+1}` : ''}{generation.progress.completed_calls!==undefined ? ` · ${generation.progress.completed_calls} AI calls completed` : ''}</p>}
           {!generation && <p className="mt-2 text-sm text-stevens-gray">Generate a candidate to check content, formatting, and rendered output.</p>}
           {generation && <><ul className="mt-3 space-y-2 text-sm">{Object.entries(generation.checks).map(([name,result]) => <li key={name}><b>{name.replace(/_/g,' ')}</b>: {result.status === 'passed' && generation.findings.some(f => f.check === name && f.severity === 'warning') ? 'passed with suggestions' : result.status.replace(/_/g,' ')}</li>)}</ul>
-            <div className="mt-4 flex flex-col gap-2"><button className="btn-red" disabled={busy || !generation.download_allowed} onClick={() => download(false)}>Download verified PowerPoint and finish</button>
-              <button className="btn-red" disabled={busy || !generation.download_allowed || !generation.pdf_available} onClick={() => download(false, 'pdf')}>Download verified PDF and finish</button>
+            <div className="mt-4 flex flex-col gap-2"><DownloadButton disabled={busy || !generation.download_allowed} pdfAvailable={!!generation.pdf_available} onDownload={format => download(false, format)}/>
               <button className="btn-ghost" onClick={async()=>{await startOver();onHome?.();}}>Finish and delete</button></div>
-            <p className="mt-2 text-xs text-stevens-gray">QA must complete and all material issues must be resolved. Cosmetic suggestions do not block downloads. Download and finish deletes processing files.</p></>}
+            <p className="mt-2 text-xs text-stevens-gray">QA must complete. Resolve each material issue or explicitly accept it after human review. Cosmetic suggestions do not block downloads. Download and finish deletes processing files.</p></>}
           {generation?.ai_pipeline && <div className="mt-4 text-sm"><b>AI pipeline: {generation.ai_pipeline.status}</b>
             {generation.ai_pipeline.failure_message && <p className="mt-2 text-stevens-red">{generation.ai_pipeline.failure_message}</p>}
             {generation.source_decisions?.[String(current)] && <p className="mt-2">This slide: {generation.source_decisions[String(current)].action==='keep_original'?'kept unchanged':'redesigned'} · {generation.source_decisions[String(current)].removed_artwork} artwork elements removed. {!!generation.source_decisions[String(current)].extracted_logos && <>{generation.source_decisions[String(current)].extracted_logos} embedded logos preserved. </>}{generation.source_decisions[String(current)].reason}</p>}
@@ -291,9 +304,10 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
         </aside>
       </div>
       {generation && !generating && generation.state !== 'checking' && <section className="card mt-5 p-5">
-        <h2 className="font-bold">Findings for this page</h2>
+        <div className="flex items-center justify-between gap-3"><h2 className="font-bold">{allFindings ? 'All slide findings' : 'Findings for this page'}</h2>
+        <button className="btn-ghost" onClick={() => setAllFindings(!allFindings)}>{allFindings ? 'Show this page only' : `Show all slide findings (${generation.findings.length-deckFindings.length})`}</button></div>
         <p className="mt-1 text-sm text-stevens-gray">Output slide {output+1} · {current>=0 ? `Source slide ${current+1}` : 'No original slide'}{outputs.length > 1 ? ` · Part ${outputs.indexOf(output)+1} of ${outputs.length}` : ''} · {pageFindings.length} findings</p>
-        <FindingsList key={`${reviewScope}:${current}:${output}`} findings={pageFindings} resolved={resolved} busy={busy} onApprove={approve} />
+        <FindingsList key={`${reviewScope}:${current}:${output}`} findings={allFindings ? generation.findings.filter(f => findingTargets(f).length>0) : pageFindings} resolved={resolved} busy={busy} onApprove={approve} slideTargets={findingTargets} onNavigate={openFindingSlide} />
       </section>}
     </main>}
   </div>;

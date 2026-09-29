@@ -33,7 +33,12 @@ W, H = 640, 360  # 16:9 thumbnail
 
 
 def find_soffice(explicit=None):
-    for cand in (explicit, shutil.which("soffice"), shutil.which("libreoffice"), _MAC_SOFFICE, r"C:\Program Files\LibreOffice\program\soffice.exe"):
+    configured = explicit or os.environ.get('STEVENS_SOFFICE')
+    if configured:
+        if not Path(configured).is_file():
+            raise RuntimeError('Configured LibreOffice executable does not exist.')
+        return _soffice_cli(str(Path(configured).resolve()))
+    for cand in (r"C:\Program Files\LibreOffice\program\soffice.exe", shutil.which("soffice"), shutil.which("libreoffice"), _MAC_SOFFICE):
         if cand and os.path.exists(cand):
             return _soffice_cli(cand)
     return None
@@ -89,7 +94,10 @@ def pptx_to_pdf(pptx_path, out_dir, soffice=None):
     if pdf.exists():
         raise RuntimeError("Render destination must be fresh")
     flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-    with _RENDER_LOCK, tempfile.TemporaryDirectory(prefix='stevens-render-', dir=out_dir) as profile:
+    # LibreOffice creates deeply nested profile files. A profile under a long
+    # checkout/test output path can silently fail on Windows (exit 0, no PDF).
+    # Keep its private working directory short, independently of artifact paths.
+    with _RENDER_LOCK, tempfile.TemporaryDirectory(prefix='stevens-lo-') as profile:
         if info['name'] == 'LibreOffice':
             lo_command = [info['executable'], '--headless', '--nologo', '--norestore',
                           '-env:UserInstallation=' + Path(profile).resolve().as_uri()]

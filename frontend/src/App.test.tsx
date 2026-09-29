@@ -17,7 +17,7 @@ test('completed QA with cosmetic suggestions enables download and labels them no
   vi.stubGlobal('fetch',vi.fn(()=>response({...session,generation})));render(<App/>);
   expect(await screen.findByText('Ready with suggestions')).toBeVisible();
   expect(screen.getByText('Suggestion · does not block download')).toBeVisible();
-  expect(screen.getByRole('button',{name:'Download verified PowerPoint and finish'})).toBeEnabled();
+  expect(screen.getByRole('button',{name:'Download'})).toBeEnabled();
   expect(screen.queryByText(/Manual approval cannot clear this finding/)).not.toBeInTheDocument();
 });
 
@@ -38,7 +38,7 @@ test('added closing has its own output preview without claiming it was a source 
   expect(screen.queryByLabelText('Reviewer note')).not.toBeInTheDocument();
   expect(screen.getByRole('button',{name:'Next slide'})).toBeDisabled();
   fireEvent.click(screen.getByRole('button',{name:'Previous slide'}));
-  expect(screen.getByLabelText('Reviewer note')).toHaveValue('Saved note');
+  expect(screen.getByLabelText('Reviewer note')).toHaveValue('Saved note\n\nReduce crowding and improve spacing.');
   fireEvent.click(screen.getByRole('link',{name:'View added Thank you closing · slide 2'}));
   expect(screen.getByText('Output slide 2 of 2')).toBeVisible();
 });
@@ -46,8 +46,8 @@ test('added closing has its own output preview without claiming it was a source 
 test('resume restores revisions without optional mode or check controls',async()=>{
   vi.stubGlobal('fetch',vi.fn(()=>response(session)));
   render(<App/>);
-  expect(await screen.findByLabelText('Reviewer note')).toHaveValue('Saved note');
-  expect(screen.getByRole('button',{name:'Too dense'})).toHaveAttribute('aria-pressed','true');
+  expect(await screen.findByLabelText('Reviewer note')).toHaveValue('Saved note\n\nReduce crowding and improve spacing.');
+  expect(screen.queryByRole('button',{name:'Too dense'})).not.toBeInTheDocument();
   expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
   expect(screen.queryByRole('combobox',{name:'Generation mode'})).not.toBeInTheDocument();
   expect(screen.getByRole('button',{name:'Previous slide'})).toBeDisabled();
@@ -66,11 +66,10 @@ test('a failed revision save is visible and stops generation',async()=>{
 test('failed verification disables final download and benchmark',async()=>{
   const generation={generation_id:'g',candidate_sha256:'abc',state:'failed',built_slides:1,checks:{artifact_coverage:{status:'failed'}},findings:[{id:'f',code:'MISSING',message:'Paragraph missing',severity:'blocking',source_slide:0}],human_decisions:[],source_to_output_slides:{'0':[0]},corrections:[]};
   vi.stubGlobal('fetch',vi.fn(()=>response({...session,generation})));render(<App/>);
-  expect(await screen.findByRole('button',{name:'Download verified PowerPoint and finish'})).toBeDisabled();
+  expect(await screen.findByRole('button',{name:'Download'})).toBeDisabled();
   expect(screen.queryByRole('button',{name:'Save approved benchmark'})).not.toBeInTheDocument();
   expect(screen.queryByRole('button',{name:'Download unverified draft'})).not.toBeInTheDocument();
   expect(screen.queryByRole('button',{name:'Download unverified PDF draft'})).not.toBeInTheDocument();
-  expect(screen.getByRole('button',{name:'Download verified PDF and finish'})).toBeDisabled();
   expect(screen.getByText('Paragraph missing')).toBeVisible();
 });
 
@@ -94,7 +93,7 @@ test('editing and saving instructions retains the candidate image but removes ap
   expect(screen.getByAltText('Generated candidate')).toBe(image);
   expect(image).toHaveAttribute('src',url);
   expect(screen.getByText(/Showing the previous candidate/)).toBeVisible();
-  expect(screen.queryByRole('button',{name:'Download verified PowerPoint and finish'})).not.toBeInTheDocument();
+  expect(screen.queryByRole('button',{name:'Download'})).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button',{name:'Save revision'}));
   await screen.findByText(/Revision saved/);
   expect(screen.getByAltText('Generated candidate')).toHaveAttribute('src',url);
@@ -114,7 +113,7 @@ test('configured AI mode sends explicit mode and requires full review',async()=>
   expect(screen.getByText('Provider timed out')).toBeVisible();
   const call=fetcher.mock.calls.find(([url])=>url.endsWith('/generate'));
   expect(JSON.parse(call?.[1]?.body as string)).toEqual({mode:'ai',repair_passes:1});
-  expect(screen.getByRole('button',{name:'Download verified PowerPoint and finish'})).toBeDisabled();
+  expect(screen.getByRole('button',{name:'Download'})).toBeDisabled();
 });
 
 test('missing keys block AI generation and connection testing',async()=>{
@@ -129,7 +128,7 @@ test('connection failure is shown without enabling release',async()=>{
   render(<App/>);await screen.findByText(/claude-test/);
   fireEvent.click(screen.getByRole('button',{name:'Test AI connection'}));
   expect(await screen.findByText(/authentication_error/)).toBeVisible();
-  expect(screen.queryByRole('button',{name:'Download verified PowerPoint and finish'})).not.toBeInTheDocument();
+  expect(screen.queryByRole('button',{name:'Download'})).not.toBeInTheDocument();
 });
 
 test('progress polling does not request a preview before rendering finishes',async()=>{
@@ -200,11 +199,12 @@ test('bulk approval sends only selected reviewable findings for the current page
   expect(screen.getByLabelText('Select finding: Missing content on first page')).not.toBeChecked();
   fireEvent.change(screen.getByLabelText('Review rationale'),{target:{value:'Inspected both'}});
   fireEvent.click(screen.getByRole('button',{name:'Approve selected (2)'}));
-  await waitFor(()=>expect(screen.getAllByText('Approved')).toHaveLength(2));
+  fireEvent.click(await screen.findByRole('button',{name:'Show 2 human-reviewed findings'}));
+  expect(screen.getAllByText('Approved')).toHaveLength(2);
   const call=fetcher.mock.calls.find(([url])=>url.endsWith('/decisions'));
   expect(JSON.parse(call?.[1]?.body as string)).toEqual({generation_id:'review-g',candidate_sha256:'checked-hash',finding_ids:['a','b'],rationale:'Inspected both'});
   expect(screen.getByLabelText('Approved finding: Title fit on first page')).toBeDisabled();
-  expect(screen.getByRole('button',{name:'Download verified PowerPoint and finish'})).toBeDisabled();
+  expect(screen.getByRole('button',{name:'Download'})).toBeDisabled();
 });
 
 test('failed bulk approval keeps the selection and rationale for retry',async()=>{
@@ -235,7 +235,7 @@ test('a clean page shows an empty state while other slides still have findings',
   expect(await screen.findByText('No findings for this page.')).toBeVisible();
   expect(screen.queryByText('Second source slide only')).not.toBeInTheDocument();
   expect(screen.queryByRole('button',{name:/Approve selected/})).not.toBeInTheDocument();
-  expect(screen.getByRole('button',{name:'Download verified PowerPoint and finish'})).toBeDisabled();
+  expect(screen.getByRole('button',{name:'Download'})).toBeDisabled();
 });
 
 test('previous and next visit every split output in order and keep source notes',async()=>{
@@ -258,7 +258,7 @@ test('previous and next visit every split output in order and keep source notes'
   expect(screen.getByLabelText('Review slide')).toHaveValue('1');
   fireEvent.click(screen.getByRole('button',{name:'Previous slide'}));
   expect(screen.getByLabelText('Review slide')).toHaveValue('0');
-  expect(screen.getByLabelText('Reviewer note')).toHaveValue('Saved note');
+  expect(screen.getByLabelText('Reviewer note')).toHaveValue('Saved note\n\nReduce crowding and improve spacing.');
   expect(screen.getByText('Title fit on first page')).toBeVisible();
 });
 
@@ -284,7 +284,7 @@ test('mandatory QA findings cannot be manually approved',async()=>{
   vi.stubGlobal('fetch',vi.fn(()=>response({...reviewSession,generation})));render(<App/>);
   expect(await screen.findByLabelText('Select finding: Title fit on first page')).toBeDisabled();
   expect(screen.queryByRole('button',{name:/Approve selected/})).not.toBeInTheDocument();
-  expect(screen.getAllByText('QA must pass after repair. Manual approval cannot clear this finding.').length).toBeGreaterThan(0);
+  expect(screen.getAllByText('This check must complete successfully before human acceptance is available.').length).toBeGreaterThan(0);
 });
 
 
@@ -294,4 +294,23 @@ test('preparation errors explain why QA has not started',async()=>{
     failure_message:'Source/template preparation failed: source canvas mismatch.'}};
   vi.stubGlobal('fetch',vi.fn(()=>response({...reviewSession,generation})));render(<App/>);
   expect(await screen.findByText('Source/template preparation failed: source canvas mismatch.')).toBeVisible();
+});
+
+
+test('all findings navigate to split outputs and human acceptance is scoped to the candidate',async()=>{
+  const initial={...reviewGeneration,findings:[{id:'f',check:'output_qa_visual',code:'LAYOUT',message:'Inspect split page',severity:'blocking',can_approve:true,affected_slides:[1,2]}]};
+  const fetcher=vi.fn((url:string)=>response(url.endsWith('/decisions') ? {generation:{...initial,state:'ready',download_allowed:true,human_decisions:[{finding_ids:['f'],rationale:'Reviewed at full size'}]}} : {...reviewSession,generation:initial}));
+  vi.stubGlobal('fetch',fetcher);render(<App/>);
+  fireEvent.click(await screen.findByRole('button',{name:'Show all slide findings (1)'}));
+  fireEvent.click(screen.getByRole('button',{name:'Go to slide 2'}));
+  expect(screen.getByLabelText('Review slide')).toHaveValue('1');
+  expect(screen.getByAltText('Generated candidate')).toHaveAttribute('src',expect.stringContaining('/slides/1/preview'));
+  fireEvent.click(screen.getByRole('button',{name:'Dismiss after human review'}));
+  expect(screen.getByRole('button',{name:'Accept issue and dismiss'})).toBeDisabled();
+  fireEvent.change(screen.getByLabelText('Reason for accepting'),{target:{value:'Reviewed at full size'}});
+  fireEvent.click(screen.getByRole('button',{name:'Accept issue and dismiss'}));
+  await waitFor(()=>expect(screen.getByRole('button',{name:'Download'})).toBeEnabled());
+  expect(screen.queryByText('Inspect split page')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button',{name:'Show 1 human-reviewed findings'}));
+  expect(screen.getByText('Inspect split page')).toBeVisible();
 });

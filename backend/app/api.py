@@ -247,13 +247,19 @@ def ai_check(sid: str, index: int, body: AiRequest):
         raise HTTPException(409, str(exc))
 
 
-def artifact_bytes(sess, ready):
+def artifact_bytes(sess, ready, format='pptx'):
     record = sess.generation
     # A legacy draft=true request must never bypass mandatory QA.
     generations.verify_identity(sess, record, ready=True)
     data = Path(record['candidate']).read_bytes()
     if hashlib.sha256(data).hexdigest() != record['candidate_sha256']:
         raise ValueError('ARTIFACT_CHANGED')
+    if format == 'pdf':
+        export = record.get('pdf_export', {})
+        path = Path(export.get('path', ''))
+        if not path.is_file() or export.get('candidate_sha256') != record['candidate_sha256'] or generations.sha256(path) != export.get('sha256'):
+            raise ValueError('Verified PDF render is unavailable or changed. Regenerate this candidate.')
+        return path.read_bytes()
     return data
 
 
@@ -264,14 +270,7 @@ def download(sid: str, draft: bool=False, generation_id: str | None=None, format
         with sessions.job(sess):
             if not sess.generation or generation_id != sess.generation['generation_id']:
                 raise ValueError('GENERATION_MISMATCH')
-            data = artifact_bytes(sess, ready=not draft)
-            if format=='pdf':
-                record=sess.generation
-                export=record.get('pdf_export',{})
-                path=Path(export.get('path',''))
-                if not path.is_file() or export.get('candidate_sha256')!=record['candidate_sha256'] or generations.sha256(path)!=export.get('sha256'):
-                    raise ValueError('Verified PDF render is unavailable or changed. Regenerate this candidate.')
-                data=path.read_bytes()
+            data = artifact_bytes(sess, ready=not draft, format=format)
             sess.close_after = min(__import__('time').time()+600, sess.expires)
             filename = ('Stevens-unverified-draft.' if draft else 'Stevens-verified.')+format
             return Response(data, media_type='application/pdf' if format=='pdf' else 'application/vnd.openxmlformats-officedocument.presentationml.presentation',

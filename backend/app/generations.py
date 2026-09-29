@@ -12,7 +12,7 @@ from slide_engine.preserve import CoverageError
 from . import grounded
 from .qa import artifact_coverage, brand_lint, render_verify
 
-POLICY_VERSION = 'visual-planning-25'
+POLICY_VERSION = 'visual-planning-26'
 REQUIRED = ('plan_coverage', 'artifact_coverage', 'structural_formatting', 'render_verification')
 QA_REQUIRED = ('ai_visual_review', 'output_qa_coverage', 'output_qa_sequence',
                'output_qa_accuracy', 'output_qa_visual')
@@ -25,7 +25,25 @@ def qa_passed(record):
 
 
 def can_approve(record, finding):
-    return qa_passed(record) and finding.get('severity') == 'review' and finding.get('check') not in QA_REQUIRED
+    # Human review can accept a completed review's finding, never missing checks
+    # or failed artifact/render infrastructure. Keep the original QA verdict.
+    checks = record.get('checks', {})
+    if any(checks.get(n, {}).get('status') not in ('passed', 'needs_review', 'failed')
+           for n in required_checks(record)):
+        return False
+    name = finding.get('check')
+    status = checks.get(name, {}).get('status')
+    review_check = name in QA_REQUIRED + ('structural_formatting', 'content_grounding')
+    review_check |= name == 'render_verification' and status in ('passed', 'needs_review')
+    review_check |= name == 'optional_ai' and finding.get('severity') == 'review'
+    return bool(review_check and finding.get('severity') in ('review', 'blocking', 'warning'))
+
+
+def approved_findings(record):
+    return {fid for d in record.get('human_decisions', [])
+            if d.get('generation_id') == record.get('generation_id')
+            and d.get('candidate_sha256') == record.get('candidate_sha256')
+            for fid in d['finding_ids']}
 
 
 class GenerateRequest(BaseModel):
@@ -62,13 +80,14 @@ def download_allowed(record):
 
 
 def checks_satisfied(record):
-    if not qa_passed(record): return False
-    approved={fid for d in record.get('human_decisions',[]) for fid in d['finding_ids']}
+    approved = approved_findings(record)
     for name in required_checks(record):
         check=record.get('checks',{}).get(name,{})
-        if check.get('status')=='passed': continue
-        findings=[f for f in record.get('findings',[]) if f.get('check')==name]
-        if not (name in ('structural_formatting','render_verification') and check.get('status')=='needs_review'
+        findings=[f for f in record.get('findings',[]) if f.get('check')==name and f.get('severity')!='warning']
+        material = [f for f in check.get('findings', []) if f.get('severity') != 'warning']
+        if len(material) != len(findings): return False
+        if check.get('status')=='passed' and not findings: continue
+        if not (check.get('status') in ('passed','needs_review','failed')
                 and check.get('findings') and findings
                 and all(f['id'] in approved and can_approve(record,f) for f in findings)):
             return False
@@ -78,14 +97,14 @@ def checks_satisfied(record):
 def settle(record):
     required=required_checks(record)
     states = [record['checks'].get(k, {}).get('status', 'not_run') for k in required]
-    if any(s == 'failed' for s in states):
-        record['state'] = 'failed'
-    elif any(s in ('error', 'not_run', 'checking') for s in states):
+    if any(s in ('error', 'not_run', 'checking') for s in states):
         record['state'] = 'error' if 'error' in states or 'not_run' in states else 'checking'
     else:
-        resolved = {fid for d in record['human_decisions'] for fid in d['finding_ids']}
+        resolved = approved_findings(record)
         pending = [f for f in record['findings'] if f['id'] not in resolved and f.get('severity')!='warning']
-        if any(f.get('severity') == 'blocking' for f in pending):
+        if checks_satisfied(record) and not pending:
+            record['state'] = 'ready'
+        elif any(f.get('severity') == 'blocking' for f in pending) or 'failed' in states:
             record['state'] = 'failed'
         else:
             record['state'] = 'needs_review' if pending or not checks_satisfied(record) else 'ready'
@@ -420,7 +439,7 @@ def decide(sess, decision):
     if record['generation_id'] != decision.generation_id or record['candidate_sha256'] != decision.candidate_sha256:
         raise ValueError('STALE_DECISION')
     reviewable = {f['id'] for f in record['findings'] if can_approve(record,f)}
-    if not decision.finding_ids or not set(decision.finding_ids) <= reviewable:
+    if not decision.rationale.strip() or not decision.finding_ids or not set(decision.finding_ids) <= reviewable:
         raise ValueError('FINDING_CANNOT_BE_APPROVED')
     record['human_decisions'].append({**decision.model_dump(), 'decided_at': datetime.now(timezone.utc).isoformat()})
     settle(record)

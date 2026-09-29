@@ -356,6 +356,15 @@ def test_authoring_api_approval_release_identity_and_cleanup(monkeypatch):
     response=admin.get(f"/api/jobs/{sid}/download?generation_id={record['generation_id']}")
     assert response.status_code==200
     assert __import__('hashlib').sha256(response.content).hexdigest()==record['candidate_sha256']
+    sess=sessions.get(sid)
+    pdf=Path(sess.generation['directory'])/'verified-export.pdf'
+    document=fitz.open();document.new_page();document.save(pdf);document.close()
+    sess.generation['pdf_export']={'path':str(pdf),'sha256':generations.sha256(pdf),'candidate_sha256':record['candidate_sha256']}
+    response=admin.get(f"/api/jobs/{sid}/download?generation_id={record['generation_id']}&format=pdf")
+    assert response.status_code==200 and response.headers['content-type']=='application/pdf'
+    assert response.content==pdf.read_bytes()
+    pdf.write_bytes(b'changed')
+    assert admin.get(f"/api/jobs/{sid}/download?generation_id={record['generation_id']}&format=pdf").status_code==409
     sess=sessions.get(sid);Path(sess.generation['output_manifest'][0]['image']).write_bytes(b'changed')
     assert admin.get(f"/api/jobs/{sid}/download?generation_id={record['generation_id']}").status_code==409
     directory=Path(sess.dir)

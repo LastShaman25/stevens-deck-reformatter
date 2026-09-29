@@ -77,6 +77,7 @@ def test_transparent_path_does_not_merge_unrelated_graphics(tmp_path):
 
 @pytest.mark.renderer
 def test_shifted_pdf_glyph_size_survives_powerpoint_render(tmp_path):
+    import json
     from app.rendering import render_to_pdf
     doc=fitz.open();page=doc.new_page(width=720,height=405)
     page.insert_text((30,60),'x',fontsize=18)
@@ -92,6 +93,11 @@ def test_shifted_pdf_glyph_size_survives_powerpoint_render(tmp_path):
         base=next(s for s in spans if s['text'].strip()=='x')
         exponent=next(s for s in spans if s['text'].strip()=='2')
         subscript=next(s for s in spans if s['text'].strip()=='0')
-        assert exponent['size']/base['size']==pytest.approx(2/3,abs=.03)
-        assert subscript['size']/base['size']==pytest.approx(2/3,abs=.03)
+        # OOXML baseline runs are scaled by the renderer: PowerPoint uses 2/3,
+        # LibreOffice uses 58%. Check each engine's native size, so an accidental
+        # second reduction (the original import bug) still fails on either.
+        renderer=json.loads(output.with_suffix('.renderer.json').read_text())['renderer']
+        expected=.58 if renderer=='LibreOffice' else 2/3
+        assert exponent['size']/base['size']==pytest.approx(expected,abs=.03)
+        assert subscript['size']/base['size']==pytest.approx(expected,abs=.03)
         assert exponent['origin'][1]<base['origin'][1]<subscript['origin'][1]

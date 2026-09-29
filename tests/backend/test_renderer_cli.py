@@ -32,7 +32,8 @@ def test_conversion_and_version_share_private_headless_profile(tmp_path,monkeypa
         assert command[0]==str(console) and '--headless' in command and '--norestore' in command
     profiles=[[v for v in command if v.startswith('-env:UserInstallation=')] for command in calls]
     assert profiles[0]==profiles[1] and len(profiles[0])==1
-    assert 'stevens-render-' in profiles[0][0]
+    assert 'stevens-lo-' in profiles[0][0]
+    assert (tmp_path/'output').as_uri() not in profiles[0][0]
     assert calls[1][-1]=='--version'
     assert json.loads(pdf.with_suffix('.renderer.json').read_text())['version']=='LibreOffice synthetic test version'
 

@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import Response
 from starlette.concurrency import run_in_threadpool
@@ -128,15 +129,15 @@ def preview(sid: str, index: int, generation_id: str):
 
 
 @router.get('/{sid}/download')
-def download(sid: str, generation_id: str, draft: bool=False):
+def download(sid: str, generation_id: str, draft: bool=False, format: Literal['pptx','pdf']='pptx'):
     sess = job(sid)
     try:
         with sessions.read_job(sess):
             if not sess.generation or sess.generation['generation_id'] != generation_id: raise ValueError('Stale candidate.')
-            data = artifact_bytes(sess, ready=not draft)
+            data = artifact_bytes(sess, ready=not draft, format=format)
             sess.close_after = min(__import__('time').time()+600, sess.expires)
-            return Response(data, media_type='application/vnd.openxmlformats-officedocument.presentationml.presentation',
-                headers={'Content-Disposition':'attachment; filename="Stevens-presentation.pptx"'})
+            return Response(data, media_type='application/pdf' if format=='pdf' else 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+                headers={'Content-Disposition':f'attachment; filename="Stevens-presentation.{format}"', 'Cache-Control':'no-store'})
     except ValueError as exc: raise HTTPException(409, str(exc))
 
 
