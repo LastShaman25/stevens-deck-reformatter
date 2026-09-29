@@ -38,4 +38,4 @@ jobs:
             -e STEVENS_TEST_DATABASE_URL=postgresql://studio:synthetic-ci-only@127.0.0.1:5432/studio \
             -e PYTHONPATH=/app \
             -v "$PWD/tests:/tests:ro" -v "$PWD/tools:/tools:ro" \
-            stevens-deployment-tests python -m pytest /tests/backend/test_shared_deployment.py -q --basetemp=/tmp/shared-tests
+            stevens-deployment-tests python -m pytest /tests/backend/test_shared_deployment.py -q --basetemp=/tmp/shared-tests -o cache_dir=/tmp/pytest-cache

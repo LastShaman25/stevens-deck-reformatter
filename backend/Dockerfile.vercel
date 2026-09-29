@@ -11,6 +11,7 @@ COPY requirements-lock.txt requirements-cloud.txt ./
 RUN pip install --no-cache-dir -r requirements-lock.txt -r requirements-cloud.txt
 COPY app ./app
 COPY slide_engine ./slide_engine
+COPY slide_fixer ./slide_fixer
 COPY assets ./assets
 COPY fontconfig.xml /etc/fonts/conf.d/99-stevens.conf
 RUN fc-cache -f && libreoffice --headless --version

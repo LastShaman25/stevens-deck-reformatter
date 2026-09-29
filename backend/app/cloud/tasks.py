@@ -18,7 +18,7 @@ _worker_slot=BoundedSemaphore(1)
 def code_version():
     root=Path(__file__).parents[2]
     h=hashlib.sha256()
-    paths=list((root/'app').rglob('*.py'))+list((root/'slide_engine').rglob('*.py'))+list((root/'assets').rglob('*'))
+    paths=[p for directory in ('app','slide_engine','slide_fixer') for p in (root/directory).rglob('*.py')]+list((root/'assets').rglob('*'))
     for path in sorted(p for p in paths if p.is_file()):
         h.update(path.relative_to(root).as_posix().encode()+path.read_bytes())
     return h.hexdigest()
