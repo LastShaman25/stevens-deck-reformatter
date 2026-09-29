@@ -53,10 +53,10 @@ SPLIT_BULLET_CAP = 9
 SPLIT_WORD_CAP = 130
 
 # Template layout names (in assets/ppt_template.pptx)
-L_TITLE = "1_Title Slide"
+L_TITLE = "Title Slide"
 L_TITLE_ONLY = "Title Only"
 L_SECTION = "Section Header"
-L_THANKYOU = "Thank You Slide"
+L_THANKYOU = "1_Title Slide"
 
 EMU_PER_INCH = 914400
 

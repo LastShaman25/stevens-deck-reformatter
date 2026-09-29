@@ -45,7 +45,16 @@ def validate(value, objects):
     ids = [e.id for e in result.elements]
     if len(ids) != len(set(ids)) or set(ids) != expected:
         raise ValueError('Element-role identification must cover every supplied ID exactly once.')
+    aliases={}
+    for ident in expected:
+        parts=ident.split('/')
+        if len(parts)>=4 and parts[1].isdigit() and parts[2] in ('slide','layout','master'):
+            aliases.setdefault('/'.join(parts[:1]+parts[2:]),[]).append(ident)
     for e in result.elements:
+        # Recover only a provably unique omitted slide-index component. This
+        # never invents an ID or drops an unknown dependency. Ambiguity fails.
+        e.related_ids=[aliases[ref][0] if ref not in expected and len(aliases.get(ref,[]))==1 else ref
+                       for ref in e.related_ids]
         if e.id in e.related_ids or not set(e.related_ids) <= expected:
             raise ValueError('Element-role relationship references an invalid ID.')
         if e.alignment_reference == 'related' and not e.related_ids:

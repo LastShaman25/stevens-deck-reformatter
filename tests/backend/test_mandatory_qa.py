@@ -76,7 +76,11 @@ def test_rejected_layout_still_runs_diagnostic_qa_without_releasing(ai_session,m
         if role=='planner':
             if payload.get('validation_error'):assert payload['previous_plan']
             result['data']['objects'][0]['x']=99
-        if role=='reviewer':reviewed.append(role)
+        if role=='reviewer':
+            from rubric_fixtures import repair_evidence,passed_checks
+            reviewed.append(role)
+            f={**repair_evidence(),'criterion':'spatial_layout','severity':'blocking','message':'Unresolved layout defect.'}
+            result['data'].update(verdict='failed',findings=[f],rubric=passed_checks([f]))
         return result
     monkeypatch.setattr(pipeline.providers,'generate',provider)
     checked=[]
@@ -86,8 +90,8 @@ def test_rejected_layout_still_runs_diagnostic_qa_without_releasing(ai_session,m
     monkeypatch.setattr(output_qa,'run',qa)
     r=generations.build(ai_session,mode='ai',repair_passes=0)
     assert reviewed and checked
-    assert r['checks']['ai_visual_review']['status']=='passed'
+    assert r['checks']['ai_visual_review']['status']=='failed'
     assert r['checks']['output_qa_visual']['status']=='passed'
-    assert r['checks']['ai_redesign']['status']=='error'
+    assert r['ai_pipeline']['rejected_slide_plans']
     assert not generations.download_allowed(r)
-    assert generations.public(r)['ai_pipeline']['failure_message']
+    assert r['repair_stop_reason']

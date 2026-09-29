@@ -12,7 +12,7 @@ from slide_engine.preserve import CoverageError
 from . import grounded
 from .qa import artifact_coverage, brand_lint, render_verify
 
-POLICY_VERSION = 'cover-photo-clear-15'
+POLICY_VERSION = 'required-closing-24'
 REQUIRED = ('plan_coverage', 'artifact_coverage', 'structural_formatting', 'render_verification')
 QA_REQUIRED = ('ai_visual_review', 'output_qa_coverage', 'output_qa_sequence',
                'output_qa_accuracy', 'output_qa_visual')
@@ -20,6 +20,7 @@ QA_REQUIRED = ('ai_visual_review', 'output_qa_coverage', 'output_qa_sequence',
 
 def qa_passed(record):
     return all(record.get('checks', {}).get(n, {}).get('status') == 'passed'
+               and all(f.get('severity')=='warning' for f in record['checks'][n].get('findings',[]))
                for n in QA_REQUIRED if n in required_checks(record))
 
 
@@ -57,9 +58,21 @@ def required_checks(record):
 
 
 def download_allowed(record):
-    return bool(record and record.get('state')=='ready' and qa_passed(record) and all(
-        record.get('checks',{}).get(name,{}).get('status') in ('passed','needs_review')
-        for name in required_checks(record)))
+    return bool(record and record.get('state')=='ready' and checks_satisfied(record))
+
+
+def checks_satisfied(record):
+    if not qa_passed(record): return False
+    approved={fid for d in record.get('human_decisions',[]) for fid in d['finding_ids']}
+    for name in required_checks(record):
+        check=record.get('checks',{}).get(name,{})
+        if check.get('status')=='passed': continue
+        findings=[f for f in record.get('findings',[]) if f.get('check')==name]
+        if not (name in ('structural_formatting','render_verification') and check.get('status')=='needs_review'
+                and check.get('findings') and findings
+                and all(f['id'] in approved and can_approve(record,f) for f in findings)):
+            return False
+    return True
 
 
 def settle(record):
@@ -71,11 +84,11 @@ def settle(record):
         record['state'] = 'error' if 'error' in states or 'not_run' in states else 'checking'
     else:
         resolved = {fid for d in record['human_decisions'] for fid in d['finding_ids']}
-        pending = [f for f in record['findings'] if f['id'] not in resolved]
+        pending = [f for f in record['findings'] if f['id'] not in resolved and f.get('severity')!='warning']
         if any(f.get('severity') == 'blocking' for f in pending):
             record['state'] = 'failed'
         else:
-            record['state'] = 'needs_review' if pending or not qa_passed(record) else 'ready'
+            record['state'] = 'needs_review' if pending or not checks_satisfied(record) else 'ready'
     return record
 
 
@@ -102,6 +115,44 @@ def add_check(record, name, result):
         record['findings'].append(finding)
 
 
+def resolve_visual_advisories(record):
+    """Close heuristic 'inspect the render' warnings with actual paired QA.
+
+    Never waive a blocking check, a provider error, missing review, or any QA
+    finding. Keep each dismissed estimate and the exact rendered-review receipt.
+    """
+    if record.get('mode')!='ai' or not qa_passed(record): return
+    digest=record.get('candidate_sha256')
+    reviews={v['output_slide']:v for v in (record.get('ai_pipeline') or {}).get('final_reviews',[])
+             if v.get('candidate_sha256')==digest and v.get('verdict')=='passed'}
+    count=(record.get('report') or {}).get('slide_count',0)
+    if not count or set(reviews)!=set(range(count)): return
+    criteria={
+        'FONT_SIZE':('visual_legibility',),'OVERFLOW':('spatial_layout','visual_legibility'),
+        'OCCLUSION':('spatial_layout',),'VISUAL_OCCLUSION':('spatial_layout','visual_legibility'),
+        'FONT':('brand_consistency',),'SOURCE_COLOR':('brand_consistency',),
+        'UNRESOLVED_STYLE':('brand_consistency','visual_legibility'),
+        'BULLET':('brand_consistency','structure_sequence'),'AUTOFIT':('visual_legibility',),
+        'RENDER_SMALL_TEXT':('visual_legibility',),'RENDER_FONT_SUBSTITUTION':('brand_consistency','content_accuracy'),
+        'RENDER_TEXT_OUTSIDE_OBJECT':('spatial_layout',),'RENDER_GLYPH_UNVERIFIED':('content_accuracy',),
+    }
+    for name in ('structural_formatting','render_verification'):
+        result=record['checks'].get(name,{})
+        if result.get('status')!='needs_review': continue
+        pending=[];resolved=[]
+        for finding in result.get('findings',[]):
+            review=reviews.get(finding.get('output_slide'),{})
+            passed={c['criterion'] for c in review.get('rubric',[]) if c['status'] in ('passed','warning')}
+            required=criteria.get(finding.get('code'))
+            if finding.get('severity')=='review' and required and set(required)<=passed:
+                resolved.append({**finding,'resolution':'Confirmed by paired visual QA and final ordered QA.',
+                                 'candidate_sha256':digest,'review_criteria':list(required)})
+            else: pending.append(finding)
+        if resolved:
+            add_check(record,name,{**result,'findings':pending,'status':'needs_review' if pending else 'passed',
+                                   'resolved_advisories':result.get('resolved_advisories',[])+resolved})
+
+
 def build(sess, mode='preserve', repair_passes=1):
     gid = uuid.uuid4().hex
     directory = Path(sess.dir, 'generations', gid)
@@ -118,13 +169,16 @@ def build(sess, mode='preserve', repair_passes=1):
     sess.generated = False
     sess.generation_mode = mode
     try:
+        from .ai import providers
+        # Reserve for the required added closing as well as all source pages.
+        providers.reserve_output_qa(sess, len(__import__('pptx').Presentation(sess.source_path).slides)+1, redesign=mode=='ai')
         if getattr(sess,'pdf_import',None):
             receipt=sess.pdf_import
             if sha256(sess.source_pdf)!=receipt['source_pdf_sha256'] or sha256(sess.source_path)!=receipt['source_pptx_sha256']:
                 raise ValueError('PDF import changed; upload the original PDF again.')
             record['pdf_import']=receipt
             add_check(record,'pdf_import',{'status':'passed','findings':[]})
-        report = grounded.build_deck(sess.source_path, str(candidate), revisions=sess.revisions)
+        report = grounded.build_deck(sess.source_path, str(candidate), revisions=sess.revisions,require_closing=True)
         ai_checks={}
         if mode=='ai':
             from .ai import pipeline
@@ -165,11 +219,9 @@ def build(sess, mode='preserve', repair_passes=1):
                     'source_to_output_slides':record['source_to_output_slides']}
         redesign_completed=mode!='ai' or ai_checks.get('ai_redesign',{}).get('status') in ('passed','needs_review')
         diagnostic_reviewed=ai_checks.get('ai_visual_review',{}).get('status') in ('passed','needs_review','failed')
-        if redesign_completed or diagnostic_reviewed:
-            for name, result in output_qa.run(sess, record, evidence).items(): add_check(record, name, result)
-        else:
-            for name in output_qa.CHECKS+('output_qa_visual',):
-                add_check(record,name,{'status':'not_run','findings':[],'reason':'Redesign did not complete. Resolve the AI error before output QA.'})
+        # QA is independent of planner/per-slide-review success. Its own prepare
+        # step checks candidate identity and complete ordered render coverage.
+        for name, result in output_qa.run(sess, record, evidence).items(): add_check(record, name, result)
         if mode=='ai' and (redesign_completed or diagnostic_reviewed):
             # The request's legacy repair_passes controls the initial planner only.
             # Mandatory QA repair cannot be disabled or waived by that setting.
@@ -180,8 +232,9 @@ def build(sess, mode='preserve', repair_passes=1):
     except Exception as exc:
         add_check(record, 'plan_coverage', {'status': 'error', 'findings': [{'code': 'BUILD_ERROR',
             'severity': 'blocking', 'message': f'Build failed: {type(exc).__name__}: {exc}'}]})
+    resolve_visual_advisories(record)
     settle(record)
-    record['usage']={'upload_requests':sess.calls,'upload_tokens':sess.tokens}
+    record['usage']={'upload_requests':sess.calls,'upload_tokens':sess.tokens,'token_limit':providers.token_limit(sess)}
     record['progress']={'stage':'finished'}
     sess.generated = record['state'] == 'ready'
     save(record)
@@ -228,12 +281,14 @@ def repair_from_output_qa(sess,record,evidence,limit,progress):
     def structural_blockers(checks):
         return [f for f in checks.get('structural_formatting',{}).get('findings',[]) if f.get('severity')=='blocking']
     def qa_score(checks):
-        fs=[f for n in names for f in checks.get(n,{}).get('findings',[])]+structural_blockers(checks)
+        fs=[f for n in names for f in checks.get(n,{}).get('findings',[]) if f.get('severity')!='warning']+structural_blockers(checks)
         return (sum(checks.get(n,{}).get('status') in ('error','not_run') for n in names),
                 sum(f.get('severity')=='blocking' for f in fs),len(fs),
                 sum(checks.get(n,{}).get('status')!='passed' for n in names))
     calls_used=len((record.get('ai_pipeline') or {}).get('calls',[]))
     attempt=-1
+    rejected_feedback=[]
+    rejected_repairs=0
     while limit is None or attempt+1 < limit:
         attempt+=1
         if qa_passed(record) and not structural_blockers(record['checks']): break
@@ -243,9 +298,11 @@ def repair_from_output_qa(sess,record,evidence,limit,progress):
         feedback=[]
         for name in names:
             for finding in record['checks'][name].get('findings',[]):
+                if finding.get('severity')=='warning': continue
                 affected=finding.get('affected_slides',[finding['output_slide']] if 'output_slide' in finding else [])
                 feedback.extend({**finding,'output_slide':i,'from_check':name} for i in sorted(set(affected)))
         feedback.extend({**f,'from_check':'structural_formatting'} for f in structural_blockers(record['checks']) if 'output_slide' in f)
+        feedback.extend(deepcopy(rejected_feedback))
         if not feedback:
             record['repair_stop_reason']='QA did not pass and supplied no slide-specific repair evidence. Output remains blocked.'
             break
@@ -258,7 +315,9 @@ def repair_from_output_qa(sess,record,evidence,limit,progress):
                  'before_sha256':record['candidate_sha256'],'accepted':False}
         record.setdefault('output_qa_repairs',[]).append(history)
         report,checks,details=pipeline.execute(sess,candidate,record['report'],work/'pipeline',
-            repair_passes=0,progress=progress,initial_feedback=feedback,calls_used=calls_used)
+            repair_passes=0,progress=progress,initial_feedback=feedback,calls_used=calls_used,
+            prior_review={'check':record['checks'].get('ai_visual_review',{}),
+                          'reviews':record['ai_pipeline'].get('final_reviews',[])})
         calls_used+=len(details['calls']); history['ai_pipeline']=details
         # Preserve total usage and the original attempt ledger for the UI.
         record['ai_pipeline']['calls'].extend(details['calls'])
@@ -266,6 +325,20 @@ def repair_from_output_qa(sess,record,evidence,limit,progress):
         history['candidate_sha256']=sha256(candidate)
         if checks.get('ai_redesign',{}).get('status')!='passed' or checks.get('ai_visual_review',{}).get('status')=='error':
             history['reason']='Redesigner or per-slide review did not complete; previous candidate retained.'
+            record['repair_stop_reason']=history['reason']+' Output remains blocked.'
+            break
+        if repair_fingerprint(candidate)==repair_fingerprint(record['candidate']):
+            rejected=[a for a in details.get('attempts',[]) if not a.get('accepted') and a.get('changed_objects',0)>0 and a.get('reviews')]
+            if rejected and rejected_repairs<2:
+                rejected_repairs+=1
+                rejected_feedback=[{**f,'output_slide':review['output_slide'],
+                    'from_check':'rejected_repair','message':'Avoid this defect from the rejected repair: '+f['message']}
+                    for review in rejected[-1]['reviews'] for f in review.get('findings',[])]
+                history['reason']='Rendered repair introduced a regression; previous candidate retained and rejection feedback sent for another attempt.'
+                save(record)
+                continue
+            history['reason']=('Repeated rendered repairs introduced regressions; previous candidate retained.' if rejected
+                               else 'The proposed repair made no substantive change; previous candidate retained.')
             record['repair_stop_reason']=history['reason']+' Output remains blocked.'
             break
         proposal=deepcopy(record)
@@ -307,6 +380,7 @@ def repair_from_output_qa(sess,record,evidence,limit,progress):
         record['ai_pipeline']['status']=details['status']
         record['ai_pipeline']['final_reviews']=details.get('final_reviews',[])
         record['ai_pipeline']['element_roles'].extend(details.get('element_roles',[]))
+        rejected_feedback=[];rejected_repairs=0
         save(record)
 
 
@@ -372,11 +446,20 @@ def public(record):
         value['ai_pipeline']['attempts']=[{k:v for k,v in a.items() if k not in ('plans','reviews')} for a in ai['attempts']]
         value['ai_pipeline']['failure_message']=' '.join(f.get('message','') for f in record['checks'].get('ai_redesign',{}).get('findings',[])) if record['checks'].get('ai_redesign',{}).get('status')=='error' else None
     value['checks'] = {k: {'status': v['status']} for k,v in record['checks'].items()}
+    qa=record.get('output_qa',{})
+    value['qa_execution']={'requests':sum(c.get('request_attempts',1) for c in record.get('output_qa_calls',[])),
+        'redesign_reviewed_slides':len({r['output_slide'] for r in (ai or {}).get('final_reviews',[])}),
+        'redesign_review_status':record.get('checks',{}).get('ai_visual_review',{}).get('status'),
+        'reviewed_slides':len({i for b in qa.get('batches',[]) for i in b['response']['reviewed']}),
+        'total_slides':(record.get('report') or {}).get('slide_count',0),
+        'complete':bool(qa.get('synthesis')),
+        'error':' '.join(f.get('message','') for f in record['checks'].get('output_qa_coverage',{}).get('findings',[]) if f.get('code') in ('OUTPUT_QA_INCOMPLETE','OUTPUT_QA_NO_RENDER'))}
     value['findings'] = [{**{k:v for k,v in f.items() if k not in ('expected','actual','evidence')},
                           'can_approve':can_approve(record,f)} for f in record['findings']]
     value['repair_stop_reason']=record.get('repair_stop_reason')
     value['corrections'] = (record.get('report') or {}).get('corrections', [])
     value['built_slides'] = (record.get('report') or {}).get('slide_count', 0)
+    value['added_slides'] = (record.get('report') or {}).get('added_slides', [])
     value['source_decisions']={key:{'action':choice['action'],'reason':choice['reason'],
         'removed_artwork':len(choice.get('remove_ids',[])),
         'extracted_logos':len(choice.get('logo_extractions',[]))} for key,choice in (record.get('report') or {}).get('source_decisions',{}).items()}

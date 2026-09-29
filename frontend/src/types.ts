@@ -101,12 +101,13 @@ export interface BenchmarkResult {
 export type Step = "upload" | "review" | "generate" | "download";
 
 export interface Finding {
+  check?: string;
   can_approve?: boolean;
   affected_slides?: number[];
   id: string;
   code: string;
   message: string;
-  severity: 'blocking' | 'review' | 'optional_pending';
+  severity: 'blocking' | 'review' | 'warning' | 'optional_pending';
   output_slide?: number;
   source_slide?: number;
   ai_source_slide?: number;
@@ -114,14 +115,16 @@ export interface Finding {
 }
 
 export interface Generation {
+  added_slides?: {output_slide:number;kind:string;text:string;authorization:string}[];
   source_decisions?: Record<string,{action:'redesign'|'keep_original';reason:string;removed_artwork:number;extracted_logos?:number}>;
+  qa_execution?: {requests:number;reviewed_slides:number;total_slides:number;complete:boolean;error:string;redesign_reviewed_slides?:number;redesign_review_status?:string};
   output_qa_repairs?: {attempt: number; targets: number[]; accepted: boolean; reason?: string}[];
   repair_stop_reason?: string | null;
   mode?: 'preserve' | 'ai';
   progress?: {stage: string; output_slide?: number; attempt?: number; completed_calls?: number; max_calls?: number; reviewed_slides?:number; total_slides?:number};
   pdf_available?: boolean;
   download_allowed?: boolean;
-  usage?: {upload_requests: number; upload_tokens: number};
+  usage?: {upload_requests: number; upload_tokens: number; token_limit?:number};
   ai_pipeline?: {status: string; failure_message?: string | null; changed_objects: number; completed_calls?: number; configuration: AIConfiguration;
     calls: {role: string; provider?: string; model?: string; status: string; message?: string}[];
     attempts: {attempt: number; accepted: boolean; changed_objects?: number; reason?: string}[]} | null;

@@ -82,7 +82,7 @@ def test_final_qa_routes_only_failed_slides_and_rechecks_all(ai_session,monkeypa
     monkeypatch.setattr(output_qa,'run',qa)
     monkeypatch.setattr(pipeline.providers,'generate',provider)
     record=generations.build(ai_session,mode='ai',repair_passes=1)
-    assert planned[:3]==[0,1,2]
+    assert planned==[1]  # Already-passing slides are never sent to the planner.
     assert repair_planned==[1]
     assert len(reviewed)==2 and len(reviewed[1])==3
     assert reviewed[0][0]==reviewed[1][0] and reviewed[0][2]==reviewed[1][2]
@@ -119,7 +119,8 @@ def test_final_qa_repair_respects_remaining_call_budget(ai_session,monkeypatch):
         return result
     monkeypatch.setattr(output_qa,'run',qa)
     record=generations.build(ai_session,mode='ai',repair_passes=1)
-    assert len(calls)==14
+    assert len(calls)==9  # Baseline and unchanged-slide evidence are reused; edited slide is reviewed.
+    assert record['output_qa_repairs'][0]['ai_pipeline']['baseline_review_reused']['reviewed_slides']==3
     assert record['state']=='failed'
     assert not record['output_qa_repairs'][0]['accepted']
     assert record['candidate_sha256']==record['output_qa_repairs'][0]['before_sha256']
@@ -151,6 +152,44 @@ def test_mandatory_repairs_continue_until_second_recheck_passes(ai_session,monke
     assert len(record['output_qa_repairs'])==2
     assert all(r['accepted'] for r in record['output_qa_repairs'])
     assert generations.qa_passed(record) and generations.download_allowed(record)
+
+
+@pytest.mark.parametrize('always_reject',[False,True])
+def test_rejected_render_feedback_is_retried_without_releasing_it(ai_session,monkeypatch,always_reject):
+    from rubric_fixtures import passed_checks
+    planned=[];final_reviews=[]
+    monkeypatch.setattr(pipeline,'structural',lambda path:{'status':'passed','findings':[]})
+    def qa(sess,record,evidence):
+        final_reviews.append(record['candidate_sha256'])
+        result={n:{'status':'passed','findings':[]} for n in output_qa.CHECKS+('output_qa_visual',)}
+        if len(final_reviews)==1:
+            result['output_qa_visual']={'status':'needs_review','findings':[
+                {**repair_evidence(),'code':'SPACING','criterion':'spatial_layout',
+                 'severity':'review','output_slide':1,'message':'Separate this paragraph.'}]}
+        return result
+    def provider(role,system,payload,*a,**kw):
+        result=mocked_provider(role,system,payload,*a,**kw)
+        if role=='planner':
+            planned.append(payload['findings'])
+            result['data']['objects'][0]['x']+=.03*len(planned)
+        if role=='reviewer' and planned and (always_reject or len(planned)==1):
+            f={**repair_evidence(),'criterion':'spatial_layout','severity':'blocking','message':'The proposed repair creates a collision.'}
+            result['data'].update(verdict='failed',findings=[f],rubric=passed_checks([f]))
+        return result
+    monkeypatch.setattr(output_qa,'run',qa)
+    monkeypatch.setattr(pipeline.providers,'generate',provider)
+    record=generations.build(ai_session,mode='ai',repair_passes=0)
+    assert len(planned)==(3 if always_reject else 2)
+    assert any(f.get('from_check')=='rejected_repair' and 'collision' in f['message'] for f in planned[1])
+    assert not record['output_qa_repairs'][0]['accepted']
+    if always_reject:
+        assert not generations.download_allowed(record)
+        assert len(final_reviews)==1
+        assert record['candidate_sha256']==record['output_qa_repairs'][0]['before_sha256']
+    else:
+        assert record['output_qa_repairs'][1]['accepted']
+        assert len(final_reviews)==2
+        assert generations.download_allowed(record)
 
 
 def test_first_page_layout_is_checked_even_for_preserved_slide(tmp_path):

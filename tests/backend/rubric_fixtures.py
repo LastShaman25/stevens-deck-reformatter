@@ -3,7 +3,8 @@ from app.ai.rubric import CRITERIA
 
 def passed_checks(findings=()):
     return [{'criterion':c,'status':('blocking' if any(f['criterion']==c and f['severity']=='blocking' for f in findings)
-            else 'review' if any(f['criterion']==c for f in findings) else 'passed'),
+            else 'review' if any(f['criterion']==c and f['severity']=='review' for f in findings)
+            else 'warning' if any(f['criterion']==c for f in findings) else 'passed'),
             'evidence':'Synthetic contract fixture; not a visual assessment.'} for c in CRITERIA]
 
 

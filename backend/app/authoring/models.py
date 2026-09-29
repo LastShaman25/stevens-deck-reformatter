@@ -14,6 +14,7 @@ class CreationRequest(Strict):
 
 
 class OutlineSlide(Strict):
+    kind: Literal['opening', 'content', 'closing'] = 'content'
     id: str = Field(pattern=r'^[a-zA-Z0-9_-]{1,40}$')
     title: str = Field(min_length=1, max_length=180)
     points: list[str] = Field(min_length=1, max_length=10)

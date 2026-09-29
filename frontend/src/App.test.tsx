@@ -8,6 +8,29 @@ const session = {session_id:'test',name:'Fixture.pptx',slide_count:1,slides:[{in
 const response = (data:unknown,ok=true) => Promise.resolve({ok,json:async()=>data} as Response);
 beforeEach(() => {window.history.replaceState({},'', '/?session=test');vi.restoreAllMocks();});
 
+test('completed QA with cosmetic suggestions enables download and labels them nonblocking',async()=>{
+  const generation={generation_id:'g',candidate_sha256:'abc',mode:'ai',state:'ready',download_allowed:true,
+    built_slides:1,checks:{ai_visual_review:{status:'passed'}},
+    findings:[{id:'qa:0',check:'ai_visual_review',code:'AI_VISUAL_SPATIAL_LAYOUT',output_slide:0,
+      severity:'warning',can_approve:false,message:'Optional extra caption spacing.'}],
+    human_decisions:[],source_to_output_slides:{'0':[0]},corrections:[]};
+  vi.stubGlobal('fetch',vi.fn(()=>response({...session,generation})));render(<App/>);
+  expect(await screen.findByText('Ready with suggestions')).toBeVisible();
+  expect(screen.getByText('Suggestion · does not block download')).toBeVisible();
+  expect(screen.getByRole('button',{name:'Download verified PowerPoint and finish'})).toBeEnabled();
+  expect(screen.queryByText(/Manual approval cannot clear this finding/)).not.toBeInTheDocument();
+});
+
+test('added closing has its own output preview without claiming it was a source page',async()=>{
+  const generation={generation_id:'g',candidate_sha256:'abc',mode:'ai',state:'ready',download_allowed:true,
+    built_slides:2,checks:{},findings:[],human_decisions:[],source_to_output_slides:{'0':[0]},corrections:[],
+    added_slides:[{output_slide:1,kind:'closing',text:'Thank you!',authorization:'Required closing'}]};
+  vi.stubGlobal('fetch',vi.fn(()=>response({...session,generation})));render(<App/>);
+  expect(await screen.findByText('Added closing slide · Output slide 2')).toBeVisible();
+  expect(screen.getByAltText('Thank you closing slide')).toHaveAttribute('src','/api/sessions/test/slides/1/preview?variant=after&generation_id=g');
+  expect(screen.getByLabelText('Source slide').querySelectorAll('option')).toHaveLength(1);
+});
+
 test('resume restores revisions without optional mode or check controls',async()=>{
   vi.stubGlobal('fetch',vi.fn(()=>response(session)));
   render(<App/>);

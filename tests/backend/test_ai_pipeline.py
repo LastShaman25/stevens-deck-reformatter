@@ -180,9 +180,9 @@ def test_ai_success_requires_all_checks_and_exact_download(ai_session):
     assert r['checks']['ai_redesign']['status']=='passed',r['findings']
     assert r['checks']['ai_visual_review']['status']=='passed'
     assert r['checks']['artifact_coverage']['status']=='passed'
-    assert len(r['ai_pipeline']['calls'])==12
-    assert [c['role'] for c in r['ai_pipeline']['calls'][3:9]]==['element_roles','planner']*3
-    assert len(r['ai_pipeline']['element_roles'])==3
+    assert len(r['ai_pipeline']['calls'])==6
+    assert [c['role'] for c in r['ai_pipeline']['calls'][3:]]==['reviewer']*3
+    assert not r['ai_pipeline']['element_roles']  # No invented edits after a clean native review.
     assert all(v['candidate_sha256']==r['candidate_sha256'] for v in r['ai_pipeline']['final_reviews'])
     ids=[f['id'] for f in r['findings'] if f['severity']=='review']
     if ids:generations.decide(ai_session,generations.Decision(generation_id=r['generation_id'],candidate_sha256=r['candidate_sha256'],finding_ids=ids,rationale='Synthetic fixture inspection'))
@@ -197,6 +197,9 @@ def test_ai_incomplete_never_releases(ai_session,monkeypatch,config,fault):
     def provider(role,system,payload,images=(),max_tokens=0):
         result=mocked_provider(role,system,payload,images,max_tokens)
         if fault=='missing_id' and role=='planner':result['data']['objects'].pop()
+        if fault=='missing_id' and role=='reviewer':
+            fs=[{**repair_evidence(),'criterion':'spatial_layout','severity':'blocking','message':'Repair required.'}]
+            result['data'].update(verdict='failed',findings=fs,rubric=passed_checks(fs))
         if fault=='timeout' or (fault=='review_timeout' and role=='reviewer'):return {'status':'timeout','message':'Injected timeout'}
         if fault=='review_invalid' and role=='reviewer':result['data']['verdict']='failed'
         return result
@@ -228,13 +231,24 @@ def test_repair_rollback_keeps_reviewed_bytes(ai_session,monkeypatch):
     monkeypatch.setattr(providers,'generate',provider)
     r=generations.build(ai_session,mode='ai',repair_passes=1)
     attempts=r['ai_pipeline']['attempts']
-    assert [a['accepted'] for a in attempts]==[True,False],attempts
-    assert r['candidate_sha256']==attempts[0]['candidate_sha256']
+    assert [a['accepted'] for a in attempts]==[False],attempts
+    assert r['candidate_sha256']!=attempts[0]['candidate_sha256']
     assert all(v['candidate_sha256']==r['candidate_sha256'] for v in r['ai_pipeline']['final_reviews'])
     assert r['state']=='needs_review'
 
 
 def test_ai_cannot_delete_content_even_if_model_reviewer_passes(ai_session,monkeypatch):
+    calls=0
+    def provider(role,system,payload,images=(),max_tokens=0):
+        nonlocal calls
+        result=mocked_provider(role,system,payload,images,max_tokens)
+        if role=='reviewer':
+            calls+=1
+            if calls<=3:
+                fs=[{**repair_evidence(),'criterion':'spatial_layout','severity':'review','message':'Spacing repair required.'}]
+                result['data'].update(verdict='needs_review',findings=fs,rubric=passed_checks(fs))
+        return result
+    monkeypatch.setattr(providers,'generate',provider)
     original=layout.apply
     def corrupt(candidate,out,plans,report):
         report,changed=original(candidate,out,plans,report)
@@ -243,9 +257,9 @@ def test_ai_cannot_delete_content_even_if_model_reviewer_passes(ai_session,monke
     monkeypatch.setattr(layout,'apply',corrupt)
     r=generations.build(ai_session,mode='ai')
     assert r['state']=='error'
-    assert not any(c['role']=='reviewer' for c in r['ai_pipeline']['calls'])
+    assert len([c for c in r['ai_pipeline']['calls'] if c['role']=='reviewer'])==3  # Baseline only; corrupt proposal never reaches QA.
     assert audit(ai_session.source_path,r['candidate'],r['report'])['status']=='passed'
-    assert r['checks']['ai_redesign']['status']=='error'
+    assert r['checks']['ai_visual_review']['status']=='error'
 
 
 def test_api_mode_validation_and_diagnostics(ai_session,monkeypatch):
@@ -269,8 +283,15 @@ def test_ai_native_edits_with_real_powerpoint_render(tmp_path,monkeypatch,config
         s.analysis=grounded.analyze(s.source_path)
         rendering.render_to_pdf(s.source_path,s.source_pdf)
         rendering.rasterize_pdf(s.source_pdf,lambda i:s.preview_path(i,'before'))
+        review_calls=0
         def provider(role,system,payload,images=(),max_tokens=0):
+            nonlocal review_calls
             result=mocked_provider(role,system,payload,images,max_tokens)
+            if role=='reviewer':
+                review_calls+=1
+                if review_calls<=3:
+                    f={**repair_evidence(),'criterion':'spatial_layout','severity':'review','message':'Synthetic move required.'}
+                    result['data'].update(verdict='needs_review',findings=[f],rubric=passed_checks([f]))
             if role=='planner':
                 for obj in result['data']['objects']:
                     if payload['slide']>0: obj['x']+=.05
@@ -283,3 +304,119 @@ def test_ai_native_edits_with_real_powerpoint_render(tmp_path,monkeypatch,config
         assert r['ai_pipeline']['changed_objects']>0
         assert len(r['checks']['render_verification']['pages'])==3
     finally:sessions.delete(s.id)
+
+
+def test_rejected_slide_does_not_discard_other_slide_repairs(ai_session,monkeypatch):
+    baseline={}
+    def provider(role,system,payload,images=(),max_tokens=0):
+        result=mocked_provider(role,system,payload,images,max_tokens)
+        if role=='planner':
+            if payload['slide']==1: result['data']['objects'][0]['x']=99
+            elif payload['slide']==2:
+                for obj in result['data']['objects']:
+                    obj['x']+=.03;obj['w']-=.03 # Stay inside the closing template's right edge.
+        elif role=='reviewer':
+            ident=payload['required_objects'][0]['id']
+            index=int(ident.split('/')[1])
+            x=payload['required_objects'][0]['box'][0]
+            baseline.setdefault(index,x)
+            if index==1 or (index==2 and abs(x-baseline[index])<.01):
+                fs=[{**repair_evidence(),'criterion':'spatial_layout','severity':'blocking','message':'Required spacing repair.'}]
+                result['data'].update(verdict='failed',findings=fs,rubric=passed_checks(fs))
+        return result
+    monkeypatch.setattr(providers,'generate',provider)
+    r=generations.build(ai_session,mode='ai',repair_passes=0)
+    assert r['ai_pipeline']['changed_objects']>0
+    assert r['ai_pipeline']['rejected_slide_plans']
+    assert r['checks']['ai_visual_review']['status']=='failed'
+    assert {f['output_slide'] for f in r['checks']['ai_visual_review']['findings']}=={1}
+    assert not generations.download_allowed(r)
+    assert all(v['candidate_sha256']==r['candidate_sha256'] for v in r['ai_pipeline']['final_reviews'])
+
+
+def test_requested_picture_rectangle_fits_without_restyling_pdf_heading(tmp_path):
+    from pptx.util import Pt
+    from slide_engine import template_policy as T
+    prs=Presentation();prs.slide_width,prs.slide_height=T.CANVAS
+    slide=prs.slides.add_slide(prs.slide_layouts[6])
+    heading=slide.shapes.add_textbox(Inches(1),Inches(.5),Inches(8),Inches(1))
+    heading.name='pdf-heading';heading.text='Existing readable heading'
+    heading.text_frame.paragraphs[0].runs[0].font.size=Pt(28)
+    path=tmp_path/'figure.png';Image.new('RGB',(200,100),'blue').save(path)
+    picture=slide.shapes.add_picture(str(path),Inches(2),Inches(2),Inches(4),Inches(2));picture.name='figure'
+    proposal=identity_plan(layout.describe(slide))
+    proposal['objects'][0].update(role='title',font_size=28)
+    proposal['objects'][1].update(x=11.8,y=5.8,w=4,h=1)
+    safe=layout.constrain(layout.LayoutPlan.model_validate(proposal),slide,[{'object_ids':['figure']}])
+    layout.validate(safe,slide,prs.slide_width/layout.EMU,prs.slide_height/layout.EMU)
+    assert safe.objects[0].role=='keep' and safe.objects[0].font_size is None
+    assert safe.objects[1].w/safe.objects[1].h==pytest.approx(2)
+    assert T.contains([safe.objects[1].x,safe.objects[1].y,safe.objects[1].w,safe.objects[1].h],T.CONTENT)
+
+
+def test_scope_includes_paired_style_and_displaced_following_text():
+    from rubric_fixtures import role_map
+    from app.ai.element_roles import RoleMap
+    prs=Presentation();slide=prs.slides.add_slide(prs.slide_layouts[6])
+    for name,y in [('marker',1),('equation',1.5),('note',3),('examples',3.5),('row',4)]:
+        sh=slide.shapes.add_textbox(Inches(1),Inches(y),Inches(4),Inches(.35));sh.name=name;sh.text=name
+    objects=layout.describe(slide);roles=role_map(objects)
+    roles['elements'][1]['related_ids']=['marker']
+    plan=identity_plan(objects)
+    plan['objects'][0]['color']=plan['objects'][1]['color']='red'
+    plan['objects'][2]['y']=3.5
+    plan['objects'][3].update(y=4,font_size=30)
+    plan['objects'][4]['y']=4.5
+    safe=layout.constrain(layout.LayoutPlan.model_validate(plan),slide,
+                          [{'object_ids':['equation','note']}],RoleMap.model_validate(roles))
+    edits={e.id:e for e in safe.objects}
+    assert edits['marker'].color==edits['equation'].color=='red'
+    assert edits['examples'].y==4 and edits['row'].y==4.5
+    assert edits['examples'].font_size is None  # Neighbor reflow does not authorize restyling.
+
+
+def test_passing_slides_not_replanned_for_old_advisories(ai_session,monkeypatch):
+    planned=[]
+    def provider(role,system,payload,*args,**kwargs):
+        result=mocked_provider(role,system,payload,*args,**kwargs)
+        if role=='reviewer' and not planned and '/1/' in payload['required_objects'][0]['id']:
+            f={**repair_evidence(),'criterion':'spatial_layout','severity':'review','message':'Move body right.'}
+            result['data'].update(verdict='needs_review',findings=[f],rubric=passed_checks([f]))
+        if role=='planner':
+            planned.append(payload['slide'])
+            result['data']['objects'][0]['x']+=.03
+        return result
+    monkeypatch.setattr(providers,'generate',provider)
+    r=generations.build(ai_session,mode='ai',repair_passes=2)
+    assert planned==[1]
+    assert r['checks']['ai_visual_review']['status']=='passed'
+
+
+@pytest.mark.parametrize('changed_render',[False,True])
+def test_review_reuse_requires_identical_render_and_native_evidence(ai_session,monkeypatch,changed_render):
+    reviewed=[];planned=[]
+    def provider(role,system,payload,*args,**kwargs):
+        result=mocked_provider(role,system,payload,*args,**kwargs)
+        if role=='reviewer':
+            index=int(payload['required_objects'][0]['id'].split('/')[1]);reviewed.append(index)
+            if index==1 and not planned:
+                f={**repair_evidence(),'criterion':'spatial_layout','severity':'review','message':'Move body right.'}
+                result['data'].update(verdict='needs_review',findings=[f],rubric=passed_checks([f]))
+        if role=='planner':
+            planned.append(payload['slide']);result['data']['objects'][0]['x']+=.03
+        return result
+    def render(candidate,directory):
+        result=fake_render(candidate,directory)
+        if changed_render and Path(candidate).name.startswith('ai-attempt-'):
+            Image.new('RGB',(160,90),'gray').save(Path(directory)/'slide-2.png')
+        return result
+    monkeypatch.setattr(providers,'generate',provider)
+    monkeypatch.setattr(generations.render_verify,'check',render)
+    r=generations.build(ai_session,mode='ai',repair_passes=0)
+    assert reviewed==([0,1,2,1,2] if changed_render else [0,1,2,1])
+    receipts=r['ai_pipeline']['final_reviews']
+    assert len(receipts)==3 and all(v['candidate_sha256']==r['candidate_sha256'] for v in receipts)
+    assert all(v.get('evidence_sha256') for v in receipts)
+    assert 'reused_from_candidate_sha256' in receipts[0]
+    assert 'reused_from_candidate_sha256' not in receipts[1]
+    assert ('reused_from_candidate_sha256' not in receipts[2])==changed_render

@@ -4,7 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from pptx import Presentation
 from pptx.oxml.ns import qn
-from slide_engine import inventory
+from slide_engine import inventory, template_policy as T
 from . import element_roles, providers, rubric
 
 SYSTEM = element_roles.SYSTEM + '''
@@ -125,7 +125,8 @@ def source_objects(prs,index,digest):
 def validate(value,prs,index,digest,require_logo_review=True):
     decision=Decision.model_validate(value)
     objects=source_objects(prs,index,digest)
-    element_roles.validate(decision.model_dump(include={'slide_purpose','elements'}),objects)
+    normalized=element_roles.validate(decision.model_dump(include={'slide_purpose','elements'}),objects)
+    decision.elements=normalized.elements
     if len(set(decision.remove_ids))!=len(decision.remove_ids): raise ValueError('Duplicate removal decisions.')
     roles={e.id:e for e in decision.elements}
     if (index==0) != (decision.slide_kind=='cover'):
@@ -138,8 +139,10 @@ def validate(value,prs,index,digest,require_logo_review=True):
         from slide_engine.template_policy import canvas_matches
         if not canvas_matches(prs.slide_width,prs.slide_height):
             raise ValueError('The source canvas differs from the template; choose redesign, not keep_original.')
-    if index==0 and decision.action=='keep_original' and prs.slides[index].slide_layout.name!='1_Title Slide':
+    if index==0 and decision.action=='keep_original' and prs.slides[index].slide_layout.name!=T.OPENING_LAYOUT:
         raise ValueError('An unchanged first slide must already use the template first-page layout.')
+    if decision.slide_kind=='closing' and decision.action=='keep_original' and prs.slides[index].slide_layout.name!=T.CLOSING_LAYOUT:
+        raise ValueError('A kept closing page must use the approved statue-photo closing layout; otherwise choose redesign.')
     cover_map={}
     if index==0 and decision.action=='redesign':
         from slide_engine.template_policy import cover_roles
@@ -246,7 +249,7 @@ def run(sess,progress,generate=providers.generate,template_images=(),indices=Non
                 if obj['suggested_logo_regions'] and len(raw_images)<4:
                     raw_images.append((f'FULL RAW IMAGE {sid}; extraction coordinates 0..1000',path))
             except ValueError: pass
-        wanted={'1_Title Slide'} if i==0 else {'Title Only','Title and Content','Section Header','Thank You Slide'}
+        wanted={T.OPENING_LAYOUT} if i==0 else {'Title Only','Title and Content','Section Header',T.CLOSING_LAYOUT}
         references=[(label,path) for label,path in template_images if label.removeprefix('APPROVED TEMPLATE: ') in wanted]
         payload={'stage':'source_decisions','source_slide':i,'source_ordinal':i+1,
             'source_canvas_emu':[prs.slide_width,prs.slide_height],

@@ -1,3 +1,4 @@
+import {QaExecution} from './components/QaExecution';
 import { useEffect, useRef, useState } from "react";
 import { UploadStep } from "./steps/UploadStep";
 import { FindingsList, findingSource } from './components/FindingsList';
@@ -237,7 +238,7 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
             <Preview url={previewGeneration && outputs.length ? `/api/sessions/${sid}/slides/${output}/preview?variant=after&generation_id=${previewGeneration.generation_id}` : null} label="Generated candidate" />
           </div>
           {previewIsPrevious && <p role="status" className="mt-3 text-sm text-amber-800">Showing the previous candidate. Your latest instructions are not applied yet; generate again to update and verify it.</p>}
-          {!previewIsPrevious && previewGeneration && !previewGeneration.download_allowed && <p className="mt-3 text-sm text-amber-800">Unapproved preview. QA has not cleared this candidate; downloads remain blocked.</p>}
+          {!previewIsPrevious && previewGeneration && !previewGeneration.download_allowed && <p className="mt-3 text-sm text-amber-800">Deck download blocked. Open findings on the affected slides below; this message does not mean the displayed slide failed.</p>}
           <p className="mt-3 text-xs text-stevens-gray">Previews show real renders when available. Review decisions apply to a specific generated file.</p>
           <fieldset disabled={busy} className="mt-5"><legend className="text-sm font-bold">Corrections</legend>
             <div className="mt-2 flex flex-wrap gap-2">{[['split','Split slide'],['dense','Too dense'],['layout','Layout'],['overlap','Overlap'],['diagram','Preserve diagram'],['emphasis','Source emphasis']].map(([id,label]) =>
@@ -250,20 +251,20 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
           <p className="mt-4 text-xs text-stevens-gray">Redesign includes mandatory visual review of every output slide and one repair pass.</p>
           {generation?.corrections.filter(c => c.index === current).flatMap(c => c.actions).map((a,i) => <p className="mt-2 text-sm" key={i}>{a.action}: <b>{a.status}</b> — {a.message}</p>)}
         </section>
-        <aside className="card p-5"><h2 className="text-lg font-bold">Verification</h2>
-          <p role="status" className="mt-2 font-semibold">{busy ? 'Processing…' : generation ? generation.state.replace('_',' ') : previewGeneration ? 'Regeneration required' : 'Not yet generated'}</p>
+        <aside className="card p-5"><h2 className="text-lg font-bold">Verification</h2>{generation&&<QaExecution generation={generation}/>}
+          <p role="status" className="mt-2 font-semibold">{busy ? 'Processing…' : generation ? generation.state === 'ready' && generation.findings.some(f => f.severity === 'warning') ? 'Ready with suggestions' : generation.state.replace('_',' ') : previewGeneration ? 'Regeneration required' : 'Not yet generated'}</p>
           {generating && generation?.progress && <p role="status" className="mt-2 text-sm">{generation.progress.stage.replace(/_/g,' ')}{generation.progress.output_slide!==undefined ? ` · output slide ${generation.progress.output_slide+1}` : ''}{generation.progress.completed_calls!==undefined ? ` · ${generation.progress.completed_calls} AI calls completed` : ''}</p>}
           {!generation && <p className="mt-2 text-sm text-stevens-gray">Generate a candidate to check content, formatting, and rendered output.</p>}
-          {generation && <><ul className="mt-3 space-y-2 text-sm">{Object.entries(generation.checks).map(([name,result]) => <li key={name}><b>{name.replace(/_/g,' ')}</b>: {result.status.replace(/_/g,' ')}</li>)}</ul>
+          {generation && <><ul className="mt-3 space-y-2 text-sm">{Object.entries(generation.checks).map(([name,result]) => <li key={name}><b>{name.replace(/_/g,' ')}</b>: {result.status === 'passed' && generation.findings.some(f => f.check === name && f.severity === 'warning') ? 'passed with suggestions' : result.status.replace(/_/g,' ')}</li>)}</ul>
             <div className="mt-4 flex flex-col gap-2"><button className="btn-red" disabled={busy || !generation.download_allowed} onClick={() => download(false)}>Download verified PowerPoint and finish</button>
               <button className="btn-red" disabled={busy || !generation.download_allowed || !generation.pdf_available} onClick={() => download(false, 'pdf')}>Download verified PDF and finish</button>
               <button className="btn-ghost" onClick={async()=>{await startOver();onHome?.();}}>Finish and delete</button></div>
-            <p className="mt-2 text-xs text-stevens-gray">Every mandatory QA review must pass. Manual approval cannot override QA. Download and finish deletes processing files.</p></>}
+            <p className="mt-2 text-xs text-stevens-gray">QA must complete and all material issues must be resolved. Cosmetic suggestions do not block downloads. Download and finish deletes processing files.</p></>}
           {generation?.ai_pipeline && <div className="mt-4 text-sm"><b>AI pipeline: {generation.ai_pipeline.status}</b>
             {generation.ai_pipeline.failure_message && <p className="mt-2 text-stevens-red">{generation.ai_pipeline.failure_message}</p>}
             {generation.source_decisions?.[String(current)] && <p className="mt-2">This slide: {generation.source_decisions[String(current)].action==='keep_original'?'kept unchanged':'redesigned'} · {generation.source_decisions[String(current)].removed_artwork} artwork elements removed. {!!generation.source_decisions[String(current)].extracted_logos && <>{generation.source_decisions[String(current)].extracted_logos} embedded logos preserved. </>}{generation.source_decisions[String(current)].reason}</p>}
             <p>{generation.ai_pipeline.calls.length} pipeline steps · {generation.ai_pipeline.changed_objects} object edits</p>
-            {generation.usage && <p>Upload total: {generation.usage.upload_requests} requests · {generation.usage.upload_tokens.toLocaleString()} recorded tokens (includes retries and QA).</p>}
+            {generation.usage && <p>Upload total: {generation.usage.upload_requests} requests · {generation.usage.upload_tokens.toLocaleString()} recorded tokens{generation.usage.token_limit?` of ${generation.usage.token_limit.toLocaleString()} allowed`:''} (includes retries and QA).</p>}
             {generation.ai_pipeline.attempts.map((a,i)=><p key={i}>Pass {a.attempt+1}: {a.accepted?'accepted':'rejected'}{a.reason?` — ${a.reason}`:''}</p>)}
             {generation.output_qa_repairs?.map(a=><p key={`qa-${a.attempt}`}>Final QA repair {a.attempt} · slides {a.targets.map(i=>i+1).join(', ')}: {a.accepted?'accepted after recheck':'previous candidate retained'}{a.reason?` — ${a.reason}`:''}</p>)}
             {generation.repair_stop_reason && <p className="text-stevens-red">{generation.repair_stop_reason}</p>}
@@ -281,6 +282,13 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
         <p className="mt-1 text-sm text-stevens-gray">Source slide {current+1}{outputs.length > 1 ? ` · Output part ${outputs.indexOf(output)+1} of ${outputs.length}` : ''} · {pageFindings.length} findings</p>
         <FindingsList key={`${reviewScope}:${current}:${output}`} findings={pageFindings} resolved={resolved} busy={busy} onApprove={approve} />
       </section>}
+      {previewGeneration?.added_slides?.map(slide => <section key={`added-${slide.output_slide}`} className="card mt-5 p-5">
+        <h2 className="font-bold">Added closing slide · Output slide {slide.output_slide+1}</h2>
+        <p className="mt-1 mb-3 text-sm text-stevens-gray">The required Stevens Thank you page follows all original content and is included in QA.</p>
+        <Preview url={`/api/sessions/${sid}/slides/${slide.output_slide}/preview?variant=after&generation_id=${previewGeneration.generation_id}`} label="Thank you closing slide" />
+        {generation && <FindingsList findings={generation.findings.filter(f => f.output_slide===slide.output_slide || f.affected_slides?.includes(slide.output_slide))}
+          resolved={resolved} busy={busy} onApprove={approve} />}
+      </section>)}
     </main>}
   </div>;
 }

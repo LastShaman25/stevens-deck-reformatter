@@ -72,7 +72,7 @@ def estimate_overflow(sh):
             continue
         char_w_emu = size * _CHAR_W * 12700  # pt -> EMU (1pt = 12700 EMU)
         chars_per_line = max(1, int(avail_w / char_w_emu))
-        total_lines += max(1, -(-len(text) // chars_per_line))  # ceil
+        total_lines += 1 if tf.word_wrap is False else max(1, -(-len(text) // chars_per_line))
 
     needed_h = total_lines * max_size * _LINE_H * 12700
     ratio = needed_h / avail_h if avail_h else 0.0

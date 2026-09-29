@@ -134,7 +134,7 @@ def test_identical_template_logo_is_reused_without_adding_a_duplicate(tmp_path):
     p=Presentation(candidate)
     assert not any(s.shape_type==13 for s in p.slides[0].shapes)
     assert audit(source,candidate,report)['status']=='passed'
-    sh=next(s for origin,_,s in inventory.source_objects(p.slides[0]) if origin=='layout' and s.shape_id==6)
+    sh=next(s for origin,_,s in inventory.source_objects(p.slides[0]) if origin=='layout' and s.shape_type==13)
     sh.left+=Inches(.2);p.save(candidate)
     assert any(f['code']=='REUSED_TEMPLATE_LOGO_ALTERED' for f in audit(source,candidate,report)['findings'])
 

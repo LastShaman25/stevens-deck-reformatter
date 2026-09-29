@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 import fitz
 from pydantic import BaseModel, Field
-from .models import CreationRequest, Outline, SlideSpec, DeckSpec
+from .models import CreationRequest, Outline, OutlineSlide, SlideSpec, DeckSpec
 from . import composer
 from .. import sessions, generations, grounded
 from ..ai import providers, output_qa, rubric
@@ -107,13 +107,44 @@ detailed adds evidence/examples. Do not pad, silently truncate, or force fixed q
 Provide stable unique IDs, title, key points, accurate source_pages and a count rationale.
 Make a coherent introduction -> explanation/evidence -> conclusion sequence. Spread plots,
 charts and equations onto DIFFERENT slides where requested: exactly one major visual per slide.
-All pages must inform planning.''', source_evidence(sess), Outline)
+Include a dedicated opening slide (kind=opening) with the presentation title and a
+short purpose, then content slides (kind=content), then a dedicated closing slide
+(kind=closing), titled Thank you!, with supported takeaways or next steps. Opening/closing must be text-only,
+with at most two short points and 25 words each. Count BOTH within the adaptive total.
+Do not put the first lesson on the opening page. All pages must inform planning.''', source_evidence(sess), Outline)
+    outline = with_bookends(outline)
     save_outline(sess, outline, sess.creation['revision'])
     return public(sess)
 
 
+def with_bookends(outline):
+    """Fill omissions before approval; never silently add slides at composition."""
+    slides = list(outline.slides)
+    used = {s.id for s in slides}
+    def unique_id(base):
+        value = base
+        while value in used: value += '_'
+        used.add(value)
+        return value
+    if not any(s.kind == 'opening' for s in slides):
+        slides.insert(0, OutlineSlide(id=unique_id('opening'), kind='opening',
+            title=outline.title, points=['Introduction and purpose']))
+    if not any(s.kind == 'closing' for s in slides):
+        slides.append(OutlineSlide(id=unique_id('closing'), kind='closing',
+            title='Thank you', points=['Questions and discussion']))
+    slides=[s.model_copy(update={'title':'Thank you!'}) if s.kind=='closing' else s for s in slides]
+    return Outline(title=outline.title, rationale=outline.rationale, slides=slides)
+
+
 def save_outline(sess, outline, expected_revision):
     if expected_revision != sess.creation['revision']: raise ValueError('Outline changed in another tab. Reload before saving.')
+    if ([s.kind for s in outline.slides].count('opening') != 1 or
+            [s.kind for s in outline.slides].count('closing') != 1 or
+            outline.slides[0].kind != 'opening' or outline.slides[-1].kind != 'closing'):
+        raise ValueError('Keep one opening slide first and one closing slide last in the approved outline.')
+    import re
+    if not re.fullmatch(r'thank\s+you[!?.\s]*',outline.slides[-1].title.strip(),re.I):
+        raise ValueError('The final closing slide must be titled Thank you!')
     available = {p['page'] for p in sess.creation['pages']}
     if any(not set(s.source_pages) <= available for s in outline.slides): raise ValueError('Outline references a missing source page.')
     sess.creation.update(outline=outline.model_dump(), revision=expected_revision+1, approved_hash=None, deck=None, status='outline')
@@ -165,6 +196,7 @@ def generate(sess, supplied_deck=None, repair_remaining=1):
     if not c['outline'] or c['approved_hash'] != hash_json(c['outline']): raise ValueError('Approve the current outline before generating.')
     sess.ensure_active()
     outline = Outline.model_validate(c['outline'])
+    providers.reserve_output_qa(sess, len(outline.slides))
     deck = supplied_deck
     if deck is None:
         slides = []
@@ -179,7 +211,10 @@ table for an editable table, or figure_page for a source page figure. Null ALL u
 including equation (use null, not an empty string). Do not invent datasets. Label
 illustrative data explicitly in notes/assumptions. Cite exact short quotations from source pages.
 The schema allows one major visual. x/y/matrix arrays may be empty when unused.
-Never add slides beyond the approved outline. Keep content suitable for the specified audience.''',
+Never add slides beyond the approved outline. For opening/closing kinds use text only:
+at most two short bullets totaling 25 words, with no chart, plot, equation, figure or table.
+The opening introduces the presentation; the closing summarizes supported takeaways
+or invites questions. Keep content suitable for the specified audience.''',
                 {'request':c['request'], 'outline':c['outline'], 'slide':item.model_dump(),
                  'source_pages':[{k:v for k,v in p.items() if k!='image'} for p in pages]}, SlideSpec,
                 images=[(f"PDF page {p['page']}", p['image']) for p in pages[:6]])
@@ -188,6 +223,11 @@ Never add slides beyond the approved outline. Keep content suitable for the spec
         deck = DeckSpec(slides=slides)
     if [(s.id,s.title) for s in deck.slides] != [(s.id,s.title) for s in outline.slides]:
         raise ValueError('Edited content must match the approved outline IDs, titles, and order.')
+    for item, slide in zip(outline.slides, deck.slides):
+        if item.kind in ('opening', 'closing') and (any(v is not None for v in
+                (slide.chart, slide.plot, slide.equation, slide.figure_page, slide.table)) or
+                len(slide.bullets) > 2 or sum(len(b) for b in slide.bullets) > 180):
+            raise ValueError('Opening and closing pages need text only, at most two short points (180 characters total). Edit the outline/content and retry.')
     c['deck'] = deck.model_dump()
     c['status'] = 'generating'; persist(sess)
     gid = uuid.uuid4().hex
@@ -201,7 +241,7 @@ Never add slides beyond the approved outline. Keep content suitable for the spec
         'outline_hash':c['approved_hash'], 'content_hash':hash_json(c['deck']), 'progress':{'stage':'composing'}}
     sess.generation = record
     try:
-        manifest = composer.compose(deck, candidate, directory/'assets', c['pages'])
+        manifest = composer.compose(deck, candidate, directory/'assets', c['pages'], kinds=[s.kind for s in outline.slides])
         record['content_manifest'] = manifest
         record['candidate_sha256'] = sha256(candidate)
         generations.add_check(record, 'plan_coverage', {'status':'passed', 'findings':[]})
@@ -216,7 +256,7 @@ Never add slides beyond the approved outline. Keep content suitable for the spec
              'message':f'Generation could not complete ({type(exc).__name__}). Inspect the outline/content or provider configuration and retry.'}]})
     sess.ensure_active()
     generations.settle(record); generations.save(record)
-    repairable = [f for f in record['findings'] if f['check']=='output_qa_visual' and f['code']=='OUTPUT_VISUAL']
+    repairable = [f for f in record['findings'] if f['check']=='output_qa_visual' and f['code']=='OUTPUT_VISUAL' and f.get('severity')!='warning']
     if repair_remaining and repairable:
         record['progress'] = {'stage':'repairing_visual_findings'}
         sess.progress = record['progress']

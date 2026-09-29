@@ -69,7 +69,13 @@ def convert(pdf_path, pptx_path, preview_path):
             if full_fills:
                 rgb=full_fills[-1]['fill'];slide.background.fill.solid()
                 slide.background.fill.fore_color.rgb=RGBColor(*(round(c*255) for c in rgb))
-            graphic_boxes=[fitz.Rect(d['rect'])+(-.5,-.5,.5,.5) for d in drawings if d not in full_fills]
+            # Fully transparent PDF path bounds carry no visible artwork. Using
+            # them as region seeds can join unrelated screenshots and underlines
+            # into one giant bitmap, making independent layout repair impossible.
+            visible_drawings=[d for d in drawings if
+                (d.get('fill') is not None and (d.get('fill_opacity') or 0)>0) or
+                (d.get('color') is not None and (d.get('stroke_opacity') or 0)>0)]
+            graphic_boxes=[fitz.Rect(d['rect'])+(-.5,-.5,.5,.5) for d in visible_drawings if d not in full_fills]
             graphic_boxes += [b['bbox'] for b in blocks if b['type']==1]
             # Work on a private page copy: strip only native text. Images and
             # vector graphics retain source pixels and layer order within each region.
@@ -90,7 +96,16 @@ def convert(pdf_path, pptx_path, preview_path):
                 bg=tuple(round(c*255) for c in full_fills[-1]['fill']) if full_fills else (255,255,255)
                 flattened=Image.new('RGBA',pixels.size,(*bg,255));flattened.alpha_composite(pixels)
                 if all(lo==hi==c for (lo,hi),c in zip(flattened.convert('RGB').getextrema(),bg)): continue
-                picture=slide.shapes.add_picture(BytesIO(pix.tobytes('png')),*box(rect))
+                # PDF graphic extents often include an almost page-sized white
+                # rectangle around a tiny logo. Trim only uniform outside padding;
+                # retain every visible pixel and update its exact page coordinates.
+                from PIL import ImageChops
+                visible=ImageChops.difference(flattened.convert('RGB'),Image.new('RGB',pixels.size,bg)).getbbox()
+                if not visible: continue
+                crop=BytesIO();pixels.crop(visible).save(crop,format='PNG')
+                rect=fitz.Rect((pix.x+visible[0])/resolution,(pix.y+visible[1])/resolution,
+                               (pix.x+visible[2])/resolution,(pix.y+visible[3])/resolution)
+                picture=slide.shapes.add_picture(BytesIO(crop.getvalue()),*box(rect))
                 picture.name=f'PDF page {i+1} graphic {graphic_count+1}'
                 graphic_count+=1
             layer.close()
@@ -100,12 +115,24 @@ def convert(pdf_path, pptx_path, preview_path):
                 tf=shape.text_frame;tf.clear();tf.word_wrap=False
                 tf.margin_left=tf.margin_right=tf.margin_top=tf.margin_bottom=0
                 paragraph=tf.paragraphs[0];paragraph.space_before=paragraph.space_after=Pt(0)
+                # Preserve PDF run baselines, not merely Unicode text. Sub/super-
+                # scripts often have ordinary digits at a displaced PDF origin.
+                main=max(line['spans'],key=lambda s:s['size'])
+                baseline=main['origin'][1]
                 for span in line['spans']:
                     run=paragraph.add_run();run.text=span['text']
                     run.font.name=span['font'].split('+')[-1]
                     run.font.size=Pt(max(1,span['size']*scale*72))
                     run.font.bold=bool(span['flags'] & 16);run.font.italic=bool(span['flags'] & 2)
                     run.font.color.rgb=RGBColor.from_string(f"{span['color']:06X}")
+                    shift=baseline-span['origin'][1]
+                    if abs(shift)>.25:
+                        # PowerPoint automatically renders shifted runs at 2/3
+                        # of sz. The PDF already contains the reduced glyph size;
+                        # compensate or every exponent/subscript is shrunk twice.
+                        nominal=span['size']*1.5
+                        run.font.size=Pt(max(1,nominal*scale*72))
+                        run._r.get_or_add_rPr().set('baseline',str(round(shift/max(1,nominal)*100000)))
             links=page.get_links()
             for link in links:
                 if link['kind'] not in (fitz.LINK_URI,fitz.LINK_GOTO):

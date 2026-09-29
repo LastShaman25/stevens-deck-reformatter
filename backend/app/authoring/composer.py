@@ -25,26 +25,37 @@ def text(shape, lines, size):
         p.space_after = Pt(14)
 
 
-def compose(spec, path, assets, pages=()):
+def compose(spec, path, assets, pages=(), kinds=None):
     assets = Path(assets); assets.mkdir(parents=True, exist_ok=True)
     prs = Presentation(grounded.TEMPLATE_PATH)
+    T.retain_opening_artwork(prs)
     for item in list(prs.slides._sldIdLst):
         prs.part.drop_rel(item.rId); prs.slides._sldIdLst.remove(item)
     layout = next(l for l in prs.slide_layouts if l.name == 'Title Only')
-    cover_layout = next(l for l in prs.slide_layouts if l.name == '1_Title Slide')
+    cover_layout = next(l for l in prs.slide_layouts if l.name == T.OPENING_LAYOUT)
+    closing_layout = next(l for l in prs.slide_layouts if l.name == T.CLOSING_LAYOUT)
+    # The closing layout contains sample text as artwork, not placeholders.
+    # Replace that sample copy in this output package, retaining photo/logo art.
+    for shape in list(closing_layout.shapes):
+        if shape.has_text_frame and shape.text.strip():
+            shape._element.getparent().remove(shape._element)
+    if kinds is not None and (len(kinds) != len(spec.slides) or kinds[0] != 'opening' or kinds[-1] != 'closing'):
+        raise ValueError('Opening and closing must match the approved outline.')
     manifest = []
     for index, content in enumerate(spec.slides):
-        slide = prs.slides.add_slide(cover_layout if index==0 else layout)
+        closing = kinds is not None and kinds[index] == 'closing'
+        bookend = index == 0 or closing
+        slide = prs.slides.add_slide(cover_layout if index==0 else closing_layout if closing else layout)
         for sh in list(slide.shapes):
             sh._element.getparent().remove(sh._element)
-        title = slide.shapes.add_textbox(*(Inches(v) for v in (T.COVER_TITLE if index==0 else (.7,.4,11.7,1.4))))
+        title = slide.shapes.add_textbox(*(Inches(v) for v in (T.CLOSING_TITLE if closing else T.COVER_TITLE if bookend else (.7,.4,11.7,1.4))))
         title.name = 'authored-title'
         text(title, [content.title], 40)
         visual = any(v is not None for v in (content.chart, content.plot, content.equation, content.figure_page, content.table))
-        body = slide.shapes.add_textbox(*(Inches(v) for v in (T.COVER_DETAILS if index==0 else (.75,2,4.0 if visual else 11.5,4.4))))
+        body = slide.shapes.add_textbox(*(Inches(v) for v in (T.CLOSING_DETAILS if closing else T.COVER_DETAILS if bookend else (.75,2,4.0 if visual else 11.5,4.4))))
         body.name = 'authored-body'
         text(body, content.bullets, 20 if sum(map(len, content.bullets)) < 600 else 18)
-        if index==0:
+        if bookend:
             for shape in (title,body):
                 for paragraph in shape.text_frame.paragraphs:
                     paragraph.font.color.rgb=RGBColor.from_string(brand.WHITE)
@@ -60,10 +71,10 @@ def compose(spec, path, assets, pages=()):
             else:
                 data = CategoryChartData(); data.categories = chart.categories
                 for series in chart.series: data.add_series(series.name, series.values)
-            kinds = {'bar': XL_CHART_TYPE.BAR_CLUSTERED, 'column': XL_CHART_TYPE.COLUMN_CLUSTERED,
+            chart_kinds = {'bar': XL_CHART_TYPE.BAR_CLUSTERED, 'column': XL_CHART_TYPE.COLUMN_CLUSTERED,
                      'line': XL_CHART_TYPE.LINE, 'pie': XL_CHART_TYPE.PIE, 'area': XL_CHART_TYPE.AREA,
                      'scatter': XL_CHART_TYPE.XY_SCATTER}
-            native = slide.shapes.add_chart(kinds[chart.kind], *(Inches(v) for v in (vx,vy,vw,vh)), data).chart
+            native = slide.shapes.add_chart(chart_kinds[chart.kind], *(Inches(v) for v in (vx,vy,vw,vh)), data).chart
             native.font.name = 'Arial'; native.font.size = Pt(14)
             native.has_title = False
             native.has_legend = len(chart.series) > 1 or chart.kind == 'pie'
@@ -101,6 +112,8 @@ def compose(spec, path, assets, pages=()):
         notes = content.notes+'\n'+references+'\nAuthoring specification:\n'+content.model_dump_json()
         slide.notes_slide.notes_text_frame.text = notes
         manifest.append({'id': content.id, 'title': content.title, 'bullets': content.bullets,
+                         'kind':kinds[index] if kinds else ('opening' if index==0 else 'content'),
+                         'layout':slide.slide_layout.name,
                          'notes': notes, 'chart': content.chart.model_dump() if content.chart else None,
                          'image_sha256': image_hash, 'table':content.table.model_dump() if content.table else None})
     prs.save(path)
@@ -114,6 +127,7 @@ def audit(path, manifest):
         findings.append({'code': 'AUTHORED_CONTENT_MISMATCH', 'severity': 'blocking', 'output_slide': i, 'message': message})
     if len(prs.slides) != len(manifest): fail(0, 'Slide count differs from approved authored content.')
     for i, (slide, wanted) in enumerate(zip(prs.slides, manifest)):
+        if wanted.get('layout') and slide.slide_layout.name != wanted['layout']: fail(i, 'Layout differs from the approved slide role.')
         named = {s.name: s for s in slide.shapes}
         if named.get('authored-title') is None or named['authored-title'].text != wanted['title']: fail(i, 'Title differs.')
         if named.get('authored-body') is None or named['authored-body'].text != '\n'.join(wanted['bullets']): fail(i, 'Body text differs.')

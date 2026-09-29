@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT/'backend'),str(ROOT)]
 import fitz
-from app import sessions
+from app import sessions, generations
 from app.ai import providers
 from app.authoring import service
 from app.authoring.models import CreationRequest
@@ -58,7 +58,8 @@ def main():
                 record=sess.generation
                 shutil.copytree(record['directory'],args.output/source)
                 summary={'source':source,'slide_count':len(sess.creation['outline']['slides']),
-                         'state':record['state'],'checks':result['generation']['checks'],
+                         'state':record['state'],'download_allowed':generations.download_allowed(record),
+                         'qa_execution':result['generation']['qa_execution'],'checks':result['generation']['checks'],
                          'findings':result['generation']['findings'],'calls':sess.calls,'tokens':sess.tokens}
                 outcomes.append(summary)
                 print(json.dumps(summary),flush=True)
@@ -67,7 +68,7 @@ def main():
             if directory.exists(): raise RuntimeError('Application workspace cleanup failed.')
         outcomes[-1]['workspace_removed']=True
         (args.output/'summary.json').write_text(json.dumps(outcomes,indent=2),encoding='utf-8')
-    return 0 if all(o['state'] in ('ready','needs_review') for o in outcomes) else 1
+    return 0 if all(o['download_allowed'] for o in outcomes) else 1
 
 
 if __name__=='__main__':raise SystemExit(main())

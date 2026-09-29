@@ -99,6 +99,97 @@ def template_context(slide):
     return result
 
 
+def resize_runs(tf, size):
+    """Change the base size without flattening equation/caption run ratios."""
+    for paragraph in tf.paragraphs:
+        base=max([r.font.size.pt for r in paragraph.runs if r.font.size]+[0])
+        for run in paragraph.runs:
+            run.font.size=Pt(size*(run.font.size.pt/base if base and run.font.size else 1))
+
+
+def constrain(plan,slide,findings,roles=None):
+    """Execute requested placements through native geometry constraints.
+
+    Pictures fit inside the requested rectangle without distortion. Unrequested
+    restyling is discarded; semantic role labels are not implicit style commands.
+    Validation and rendered QA still run after this deterministic projection.
+    """
+    plan=plan.model_copy(deep=True)
+    current=nodes(slide);lookup={e.id:e for e in plan.objects}
+    if len(lookup)!=len(plan.objects) or set(lookup)!={i for i,*_ in current}: return plan
+    if any(e.x>T.CANVAS[0]/EMU or e.y>T.CANVAS[1]/EMU for e in plan.objects): return plan
+    affected={ident for f in findings for ident in f.get('object_ids',[])}
+    scope=affected & set(lookup)
+    if scope:
+        scope |= {rid for e in (roles.elements if roles else []) if e.id in scope for rid in e.related_ids} & set(lookup)
+        for ident,_,_,parent,_ in current:
+            if parent in scope: scope.add(ident)
+    style_scope=set(scope)
+    # Reflow may displace the next paragraph even if the role classifier did not
+    # label it semantically related. Permit those geometric dependencies, while
+    # retaining their styles and keeping distant, unrelated objects untouched.
+    while scope:
+        additions=set()
+        for ident,_,box,parent,_ in current:
+            if ident in scope: continue
+            for owner in scope:
+                e=lookup[owner]
+                overlap=max(0,min(box[0]+box[2],e.x+e.w)-max(box[0],e.x))*max(0,min(box[1]+box[3],e.y+e.h)-max(box[1],e.y))
+                if overlap>.005:
+                    additions.add(ident);break
+        if not additions: break
+        scope |= additions
+    for ident,shape,box,parent,locked in current:
+        edit=lookup[ident]
+        if scope and ident not in scope:
+            edit.x,edit.y,edit.w,edit.h=box
+        protected=ident.endswith(('|logo','|code'))
+        if protected or (affected and ident not in style_scope):
+            edit.role='keep';edit.font_size=None;edit.color='keep'
+        # Native template titles carry the explicit |title marker. A PDF line
+        # called 'title' by the model does not become a new template placeholder.
+        if edit.role=='title' and not ident.endswith('|title'):
+            edit.role='keep'
+        if ident.endswith('|title'):
+            edit.role='keep'
+            if edit.font_size is not None: edit.font_size=brand.TITLE_PT
+        if parent or locked: continue
+        original_rect=(edit.x,edit.y,edit.w,edit.h)
+        # Protect code characters/typeface without recentering each native text
+        # line as if it were an image. Otherwise a requested shared left edge is lost.
+        rigid=shape._element.tag in (qn('p:pic'),qn('p:grpSp')) or shape.has_chart or ident.endswith('|logo')
+        if rigid:
+            factor=min(edit.w/box[2],edit.h/box[3])
+            edit.x+=(edit.w-box[2]*factor)/2;edit.y+=(edit.h-box[3]*factor)/2
+            edit.w=box[2]*factor;edit.h=box[3]*factor
+        regions=T.regions(slide)
+        if T.is_cover(slide) and shape.has_text_frame and not protected:
+            regions=(T.COVER_TITLE,) if ident.endswith('|title') else (T.COVER_DETAILS,)
+        def distance(region):
+            x,y,w,h=region
+            return max(x-edit.x,0,edit.x+edit.w-x-w)**2+max(y-edit.y,0,edit.y+edit.h-y-h)**2
+        x,y,w,h=min(regions,key=distance)
+        factor=min(1,w/edit.w,h/edit.h)
+        if rigid:edit.w*=factor;edit.h*=factor
+        else:edit.w=min(edit.w,w);edit.h=min(edit.h,h)
+        edit.x=min(max(edit.x,x),x+w-edit.w);edit.y=min(max(edit.y,y),y+h-edit.h)
+        if shape._element.tag==qn('p:grpSp') and original_rect!=(edit.x,edit.y,edit.w,edit.h):
+            # Children use absolute coordinates. Transform their proposed boxes
+            # with their parent, rather than separating labels from diagrams.
+            ox,oy,ow,oh=original_rect
+            def descendant(child):
+                while child:
+                    if child==ident:return True
+                    child=next((p for n,_,_,p,_ in current if n==child),None)
+                return False
+            for child,_,_,cp,_ in current:
+                if cp and descendant(cp):
+                    e=lookup[child]
+                    e.x=edit.x+(e.x-ox)*edit.w/ow;e.y=edit.y+(e.y-oy)*edit.h/oh
+                    e.w*=edit.w/ow;e.h*=edit.h/oh
+    return plan
+
+
 def validate(plan,slide,width,height):
     if T.is_preserved(slide):
         raise ValueError('The source-first keep decision forbids editing this slide.')
@@ -153,18 +244,36 @@ def validate(plan,slide,width,height):
     # Reject newly introduced text collisions before paying for a render/review.
     # Existing source collisions still require visual QA; unchanged complex math
     # or intentional text-on-panel containment is not treated as a new collision.
-    texts=[(ident,box,parent) for ident,shape,box,parent,locked in current
+    texts=[(ident,shape,box,parent) for ident,shape,box,parent,locked in current
            if shape.has_text_frame and shape.text.strip()]
+    def ink_box(shape,rect,edit=None):
+        tf=shape.text_frame
+        if tf.word_wrap is not False or len(tf.paragraphs)!=1 or '\n' in shape.text or '\v' in shape.text:
+            return rect
+        runs=tf.paragraphs[0].runs
+        if any((r.font.name or 'Arial')!='Arial' for r in runs): return rect
+        # PDF imports use single unwrapped lines. Their generous frame rectangles
+        # are not their ink bounds. Estimate Arial advance widths rather than
+        # rejecting a caption because its empty right/bottom padding intersects.
+        import fitz
+        sizes=[r.font.size.pt if r.font.size else 18 for r in runs]
+        factor=(edit.font_size/max(sizes)) if edit and edit.font_size and sizes else 1
+        width=sum(fitz.get_text_length(r.text,fontname='hebo' if r.font.bold else 'heit' if r.font.italic else 'helv',
+                                      fontsize=size*factor) for r,size in zip(runs,sizes))/72
+        height=max(sizes or [18])*factor*1.12/72
+        x,y,w,h=rect
+        ml,mr,mt,mb=(getattr(tf,'margin_'+s)/EMU for s in ('left','right','top','bottom'))
+        return (x+ml,y+mt,min(max(.001,w-ml-mr),width),min(max(.001,h-mt-mb),height))
     def intersection(a,b):
         area=max(0,min(a[0]+a[2],b[0]+b[2])-max(a[0],b[0]))*max(0,min(a[1]+a[3],b[1]+b[3])-max(a[1],b[1]))
         return area/max(.000001,min(a[2]*a[3],b[2]*b[3]))
-    for i,(aid,a,ap) in enumerate(texts):
+    for i,(aid,ashape,a,ap) in enumerate(texts):
         ae=lookup[aid]; ar=(ae.x,ae.y,ae.w,ae.h)
-        for bid,b,bp in texts[i+1:]:
+        for bid,bshape,b,bp in texts[i+1:]:
             if ap!=bp: continue
             be=lookup[bid]; br=(be.x,be.y,be.w,be.h)
             if T.contains(ar,br) or T.contains(br,ar): continue
-            if intersection(ar,br)>max(.12,intersection(a,b)+.03):
+            if intersection(ink_box(ashape,ar,ae),ink_box(bshape,br,be))>max(.12,intersection(ink_box(ashape,a),ink_box(bshape,b))+.03):
                 raise ValueError(f'Text collision between {aid} and {bid}; allocate separate boxes and line spacing.')
     from ..qa.geometry import estimate_overflow
     from pptx.shapes.autoshape import Shape
@@ -176,8 +285,7 @@ def validate(plan,slide,width,height):
         # Group descendants have local dimensions; plans use absolute inches.
         projected.width=round(shape.width*edit.w/box[2]); projected.height=round(shape.height*edit.h/box[3])
         if edit.font_size is not None or edit.role=='title':
-            for p in projected.text_frame.paragraphs:
-                for r in p.runs: r.font.size=Pt(brand.TITLE_PT if edit.role=='title' else edit.font_size)
+            resize_runs(projected.text_frame,brand.TITLE_PT if edit.role=='title' else edit.font_size)
         before=estimate_overflow(shape)[1]; after=estimate_overflow(projected)[1]
         styled=edit.font_size is not None or edit.role=='title'
         if after>1.25 and (styled or after>before*1.1):
@@ -213,10 +321,11 @@ def apply(candidate,out,plans,report):
                 size=brand.TITLE_PT if edit.role=='title' else edit.font_size
                 color={'ink':brand.INK,'red':brand.RED,'white':brand.WHITE}.get(edit.color)
                 for tf in frames:
+                    if size is not None:
+                        changed |= any(r.font.size!=Pt(size) for p in tf.paragraphs for r in p.runs)
+                        resize_runs(tf,size)
                     for p in tf.paragraphs:
                         for r in p.runs:
-                            if size is not None:
-                                changed |= r.font.size!=Pt(size);r.font.size=Pt(size)
                             if color:
                                 from pptx.enum.dml import MSO_COLOR_TYPE
                                 changed |= r.font.color.type!=MSO_COLOR_TYPE.RGB or str(r.font.color.rgb)!=color

@@ -47,10 +47,10 @@ export function FindingsList({findings, resolved, busy, onApprove, deckWide=fals
             <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center justify-between gap-2">
               <b className="break-words">{f.code?.replace(/_/g, ' ')}</b>
               <span className={approved ? 'text-stevens-blue' : f.severity === 'blocking' ? 'font-semibold text-stevens-red' : 'text-stevens-gray'}>
-                {approved ? 'Approved' : f.severity === 'review' ? 'Needs review' : f.severity === 'blocking' ? 'Blocking' : 'AI check pending'}
+                {approved ? 'Approved' : f.severity === 'warning' ? 'Suggestion · does not block download' : f.severity === 'review' ? 'Needs review' : f.severity === 'blocking' ? 'Blocking' : 'AI check pending'}
               </span></div>
               <p className="mt-1 break-words">{f.message}</p>
-              {!approved && (f.severity !== 'review' || f.can_approve === false) && <p className="mt-1 text-xs text-stevens-gray">
+              {!approved && f.severity !== 'warning' && (f.severity !== 'review' || f.can_approve === false) && <p className="mt-1 text-xs text-stevens-gray">
                 {f.can_approve === false ? 'QA must pass after repair. Manual approval cannot clear this finding.' : f.severity === 'optional_pending' ? 'Rerun or deselect the optional AI check.' : 'Repair and regenerate to resolve this finding.'}
               </p>}
             </div>

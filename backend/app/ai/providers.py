@@ -82,6 +82,36 @@ def generate(role, system, payload, images=(), max_tokens=16000):
     return {**result,'request_attempts':len(attempts),'attempt_statuses':attempts}
 
 
+def token_limit(sess):
+    return int(setting('STEVENS_AI_MAX_TOKENS', str(getattr(sess, 'default_token_limit', 500000))))
+
+
+def reserve_output_qa(sess, slide_count, redesign=False):
+    """Protect one complete ordered review from planning and repair calls.
+
+    Estimates include overlapping batches, full-deck synthesis, and retries.
+    Explicit configured caps are never increased. Redesign needs source decisions,
+    native layout calls, paired per-slide review AND final ordered QA. Its default
+    budget therefore scales with deck size, bounded at two million tokens.
+    """
+    batches = (slide_count + 4) // 5
+    sess.qa_call_reserve = 2 * (batches + 1)
+    sess.default_token_limit = max(500000, min(2000000, 120000 * slide_count)) if redesign else 500000
+    cap = token_limit(sess)
+    sess.qa_token_reserve = min(cap, 24000 * (batches + 1) + 5000 * slide_count)
+
+
+def request_token_estimate(system, payload, images, max_tokens):
+    # Conservative admission estimate, not provider billing. Includes Unicode,
+    # output allowance, schema, and high-detail images. Actual usage is recorded.
+    return (len(system) + len(json.dumps(payload, ensure_ascii=False))) // 2 + 4096 * len(images) + max_tokens
+
+
+def reserve_redesign_review(sess, slide_count):
+    """The redesign workflow has an additional paired, per-slide QA stage."""
+    sess.redesign_review_remaining = slide_count
+
+
 def _generate_once(role, system, payload, images=(), max_tokens=16000):
     from ..sessions import active_session
     sess = active_session.get()
@@ -89,9 +119,17 @@ def _generate_once(role, system, payload, images=(), max_tokens=16000):
         try:
             sess.ensure_active()
             limit = int(setting('STEVENS_AI_MAX_CALLS', '160'))
-            reserve = 8 if role != 'output_qa' else 0
-            if sess.calls >= limit-reserve or sess.tokens >= int(setting('STEVENS_AI_MAX_TOKENS', '500000')):
-                return {'status':'budget_exceeded', 'message':f'Upload budget exhausted ({sess.calls} requests, {sess.tokens} recorded tokens across attempts). Start a new upload to retry; verification cannot be skipped.'}
+            reserve = getattr(sess, 'qa_call_reserve', 8) if role != 'output_qa' else 0
+            token_reserve = getattr(sess, 'qa_token_reserve', 0) if role != 'output_qa' else 0
+            if role not in ('reviewer', 'output_qa'):
+                remaining = getattr(sess, 'redesign_review_remaining', 0)
+                reserve += remaining
+                token_reserve += 8000 * remaining
+            upload_token_limit = token_limit(sess)
+            estimate = request_token_estimate(system, payload, images, max_tokens)
+            if sess.calls >= limit-reserve or sess.tokens + estimate > upload_token_limit-token_reserve:
+                reason = ' Remaining budget is reserved for mandatory output QA.' if role != 'output_qa' and token_reserve else ''
+                return {'status':'budget_exceeded', 'message':f'Insufficient upload budget for this {role} request ({sess.calls} requests, {sess.tokens} recorded tokens across attempts).'+reason+' Output remains blocked unless every required check passes.'}
             sess.calls += 1
         except ValueError:
             return {'status':'cancelled', 'message':'Processing was cancelled or expired.'}

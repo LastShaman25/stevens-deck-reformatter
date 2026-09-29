@@ -39,6 +39,7 @@ def build(src_path, out_path, template_path, revisions=None, source_decisions=No
     from app import brand as B
     inv = inventory.inspect(src_path)
     source, dest = Presentation(src_path), Presentation(template_path)
+    T.retain_opening_artwork(dest)
     source_decisions=source_decisions or {}
     if source_decisions:
         from app.ai.source_decisions import validate
@@ -57,6 +58,10 @@ def build(src_path, out_path, template_path, revisions=None, source_decisions=No
         dest.slides._sldIdLst.remove(sid)
     layout = next((x for x in dest.slide_layouts if x.name == B.L_TITLE_ONLY), dest.slide_layouts[6])
     cover_layout = next(x for x in dest.slide_layouts if x.name == B.L_TITLE)
+    closing_layout = next(x for x in dest.slide_layouts if x.name == T.CLOSING_LAYOUT)
+    # Closing example copy is replaced by native source/authorized closing text.
+    for shape in list(closing_layout.shapes):
+        if shape.has_text_frame and shape.text.strip():shape._element.getparent().remove(shape._element)
     section_layout = next(x for x in dest.slide_layouts if x.name == 'Section Header')
     # Hide only the content master's furniture. Keep the section layout's own
     # photo and top-right logo; do not mutate the shared master or cover layout.
@@ -127,8 +132,11 @@ def build(src_path, out_path, template_path, revisions=None, source_decisions=No
         raise CoverageError(coverage)
     slides = []
     for plan in plans:
+        from .bookends import has_thanks
+        closing = (source_decisions.get(str(plan['source_slide']),{}).get('slide_kind')=='closing'
+                   or (plan['source_slide']==len(source.slides)-1 and has_thanks(source.slides[-1])))
         section = source_decisions.get(str(plan['source_slide']),{}).get('slide_kind')=='section'
-        slide = dest.slides.add_slide(cover_layout if plan['source_slide']==0 and plan['page']==0 else section_layout if section else layout)
+        slide = dest.slides.add_slide(cover_layout if plan['source_slide']==0 and plan['page']==0 else closing_layout if closing else section_layout if section else layout)
         for sh in list(slide.shapes):
             slide.shapes._spTree.remove(sh._element)
         slides.append(slide)
@@ -187,21 +195,10 @@ def build(src_path, out_path, template_path, revisions=None, source_decisions=No
         src_slide = source.slides[plan['source_slide']]
         dst_slide = slides[out_idx]
         objects = {(origin, sh.shape_id): (part, sh) for origin, part, sh in inventory.source_objects(src_slide)}
-        cover = T.is_cover(dst_slide)
+        cover = T.is_cover(dst_slide) or T.is_closing(dst_slide)
         decision=source_decisions.get(str(plan['source_slide']))
         cover_pictures=[e for e in (decision or {}).get('elements',[]) if e['role']=='image'
                         and e.get('artwork_action','retain')=='retain' and not e.get('contains_logo')]
-        if cover and len(cover_pictures)==1:
-            selected=next((s for (origin,sid),(_,s) in objects.items()
-                           if cover_pictures[0]['id'].endswith(f'/{origin}/{sid}')),None)
-            if selected is not None and selected._element.tag==qn('p:pic'):
-                # Replace the bundled campus photo, rather than stacking a
-                # second photograph on it. The separate burgundy/mark artwork stays.
-                for artwork in list(dst_slide.slide_layout.shapes):
-                    if artwork.shape_id==7 and artwork.name=='Picture 6' and artwork._element.tag==qn('p:pic'):
-                        artwork._element.getparent().remove(artwork._element)
-                dst_slide.slide_layout._element.set('showMasterSp','0')
-                dst_slide._element.cSld.set('name','sss:cover-source-photo')
         extracted = T.cover_roles(src_slide, source.slide_height,decision,T.regions(dst_slide)[:2]) if cover or T.is_section(dst_slide) else {}
         plan['element_extraction'] = extracted
         region = T.background_region(dst_slide)

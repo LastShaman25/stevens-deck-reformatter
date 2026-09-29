@@ -1,8 +1,9 @@
 """Shared, versioned design policy and mandatory visual review coverage."""
 from typing import Literal
+from slide_engine.template_policy import TEMPLATE_ROLE_RULE
 from pydantic import BaseModel, ConfigDict, Field
 
-VERSION = 'cover-photo-clear-10'
+VERSION = 'required-closing-15'
 Criterion = Literal['content_presence', 'content_accuracy', 'structure_sequence',
                     'spatial_layout', 'visual_legibility', 'graphical_fidelity',
                     'brand_consistency', 'instruction_compliance']
@@ -17,11 +18,18 @@ def channel(criterion):
 
 
 GENERATOR = '''Make the smallest useful change; an already readable slide may remain unchanged.
-On a text-only cover keep the template campus photo fully visible. Transfer ALL native
+In redesign, preserve the source slide sequence. A final references, attribution, or
+lesson-content page is not automatically a thank-you/closing page. Preserve that source
+page and append the explicitly required Thank you! page using the statue-photo closing
+layout. Reuse an existing final Thank you closing when suitable; do not duplicate it.
+Every deck MUST end with that closing. Do not replace or discard the final source content.
+An authorized_addition is intentionally new template text, not missing source evidence
+or invented substantive content. Audit it against its explicit authorization and template.
+On a text-only opening keep the mostly red template and faint tower visible; never add a campus/statue photograph. Transfer ALL native
 cover text, including small bottom notes, dates, schedules and page numbers, to the
 right-hand title/details regions. Classify supplementary text as footer/caption where
 appropriate and allocate readable spacing. Never retain its former white background
-as an inset panel over the template photograph. Do not discard meaningful fine print.
+as an inset panel over the approved opening artwork. Do not discard meaningful fine print.
 For PDF line boxes and mathematics, plan related lines as a coherent block with room
 for superscripts, subscripts, fractions and annotations. Increasing font size requires
 recomputing box heights and adjacent gaps; never enlarge fonts in unchanged tight boxes.
@@ -29,13 +37,16 @@ Use available content area to improve legibility instead of uniformly shrinking 
 original page and leaving unused space while essential text remains tiny. Preserve
 intentional whitespace and asymmetric compositions; there is no target fill percentage.
 Every repair is provisional until newly rendered slides pass independent QA. All
-review findings require correction or evidence-based dismissal by QA, not user waiver.
+blocking/review findings require correction or evidence-based dismissal by QA, not user waiver.
+Cosmetic warning findings are optional suggestions; do not redesign an otherwise readable
+slide solely to remove them. Preserve code text indentation, but code text-box alignment
+may change without changing the code itself.
 Before editing, record slide_kind (cover/content/section/closing), element roles,
 keep/redesign with a concrete reason, and retain/remove for every picture/background.
 The first slide is the cover, irrespective of its text or placeholder types. Use the
 template's first-page layout, transferring title, subtitle and author into their regions.
 Remove the obsolete original cover background instead of placing a miniature old cover
-over the template photo. Do not classify a large statistic or institutional wordmark as
+over the opening artwork. Do not classify a large statistic or institutional wordmark as
 the heading simply because it is largest. Identify title meaning and reading hierarchy.
 Logos are complete artwork: preserve the source font, letter spacing, line arrangement,
 colors and proportions; exclude them from global typeface replacement. If obsolete art
@@ -79,10 +90,10 @@ just to create margins. Never detach white text from its dark panel or place it 
 Avoid accidental stacking: logo over logo, footer over logo, text over text, text outside
 its panel, and decorations covering content. Intentional background/foreground layering
 is allowed only when all foreground content remains legible. Preserve layer order.
-The first output page uses the 1_Title Slide template. Extract title, subtitle,
+The first output page uses the mostly red Title Slide template. Extract title, subtitle,
 presenter and supporting native elements before placing them in its named regions.
-The approved cover has a campus photo on the left, a red field with white text on the
-right, and a white Stevens mark at top-right. Its photo, rule and artwork are authorized.
+The opening is mostly red with a faint tower on the left and a white Stevens mark at
+top-right. It has NO campus/statue photo. The statue-photo layout is reserved for closing.
 Interior footer restrictions do NOT apply to the cover. Its title_box/details_box are
 inside the red right-hand field; coordinates are inches from the top-left corner.
 Identify titles in ordinary text boxes as well as placeholders. The title belongs in
@@ -105,13 +116,37 @@ decorative shapes or extra accents merely to make a different-looking slide. Exp
 specific defect or user instruction motivating changes; keep already-correct areas intact.'''
 
 QA = '''Audit all eight defect categories for every slide, using evidence. For redesign,
-For a text-only source cover, reject any white source-page inset covering the template
-photo. All title, metadata and meaningful fine print belong in the right-hand text regions;
+the supplied original is the evidence for content fidelity. An unchanged source claim
+is supported as a faithful transfer; this is not an independent endorsement of its
+universal truth. Do not demand external citations or research solely because a source
+statement lacks an outside reference. Report an actual contradiction, altered meaning,
+or demonstrable error with specific evidence. Newly introduced claims still require
+support. Redesign must not rewrite source teaching material merely to satisfy an
+unsolicited independent fact-check.
+Source element alignment describes the OLD composition; it is not an instruction
+to reproduce its exact footer or heading positions after moving to a new template.
+Judge those positions against the destination template_contract and explicit user
+instructions. On a cover, all retained text may move into the approved text regions.
+Judge citations, captions, footers and mathematical indices in their own roles.
+They may be smaller than body text; relative size or an automated font estimate
+alone is not evidence of unreadability. Compare the actual original and candidate
+at the supplied native image resolution. A legibility finding must identify the
+particular text/symbols that cannot be read or their observable degradation; do not
+request enlargement merely because a caption is smaller than the heading. Still
+reject genuinely unreadable fine print, lost indices, clipping or collisions.
+the last source page may be references, attribution, or lesson content. Its ordinal
+alone does not require a closing layout; assess its semantic role and source decision.
+The user requires every deck to end with Thank you! on the approved statue-photo
+closing artwork. If the source ends with content, preserve it and verify the additional
+closing is last. An authorized_addition has no original source slide; its authorization
+and approved template are its comparison evidence. All source-derived pages still
+require their original/candidate comparisons. A missing required closing is blocking.
+For a text-only source opening, reject any white source-page inset covering the red template artwork. All title, metadata and meaningful fine print belong in the right-hand text regions;
 preserve the wording and inspect text fit there. Merely naming the first-page layout is
-not proof of template fidelity. Photo occlusion belongs to spatial_layout.
+not proof of template fidelity. Wrong opening/closing artwork belongs to brand_consistency; occlusion belongs to spatial_layout.
 Do not pass merely because a repair was attempted or a human approved a finding.
 Recheck every previous acceptance condition against the new render, and inspect for
-new defects. Unresolved review-level findings still inhibit release. Evaluate equations
+new defects. Unresolved review-level findings still inhibit release; cosmetic warnings do not. Evaluate equations
 at readable detail: cramped line spacing and colliding exponents/labels are spatial_layout;
 tiny but intact symbols are visual_legibility; altered symbols are content_accuracy.
 When essential text is tiny alongside substantial usable empty space, require a layout
@@ -163,8 +198,7 @@ Owns ALL stacking/occlusion and clipping, including logos/footers, code panels, 
 chart labels, inherited template artwork, and shapes outside the slide. Inspect every logo
 location, especially the protected bottom-left template mark and footer band.
 Apply that bottom-left/footer restriction ONLY to regular content slides, never to section headers or
-the cover. Read slide_kind and template_contract before judging. The approved cover's
-photo and top-right mark must not be reported as missing interior branding or unapproved
+the cover. Read slide_kind and template_contract before judging. The approved opening's red artwork and top-right mark must not be reported as missing interior branding or unapproved
 content. Compare actual supplied coordinates with named box coordinates before claiming
 a box violation; do not invent a contradictory placement from a vague visual impression.
 When an APPROVED TEMPLATE reference is supplied, compare inherited artwork directly
@@ -238,9 +272,20 @@ notes and sources through applicable categories. Code/math and charts are object
 inspection lenses, never parallel scores. Check blank slides, miniature covers, code outside
 its panel, stacked wordmarks, disconnected captions and unintended off-center groups.
 
-Severity is independent of category: blocking for confirmed lost/changed essential meaning,
-misleading data, unreadable essentials or corrupted branding; review for genuine uncertainty
-or minor visible defects. not_applicable requires an explicit reason. Notes intentionally
+Severity is independent of category:
+- blocking: evidenced lost/altered required content or meaning, misleading data, unreadable
+  text/symbols, obscuring overlap/clipping, wrong required template, or damaged branding.
+- review: unresolved uncertainty about one of those material requirements. Identify the
+  specific possible harm and evidence needed. Do not use review for cosmetic preferences.
+- warning: optional polish only, with content readable and meaning, associations, branding
+  and required template intact. Minor gaps, optical alignment, and whole code-box left-edge
+  differences are warnings unless they obscure content or alter code semantics. Textual
+  code indentation that changes meaning is content_accuracy/blocking, never a warning.
+A small caption gap without obstruction and differently aligned independent code-line
+boxes with unchanged code text do not block release. A criterion with only warnings has
+status warning; a completed slide review with only warnings has verdict passed. Retain
+warnings in the report; never invent a material defect to force cosmetic repair.
+not_applicable requires an explicit reason. Notes intentionally
 remain off-slide. Do not fail for personal aesthetic preference. A good unchanged slide passes.
 Each finding MUST supply affected slides and object_ids (empty only when no supplied ID
 can locate the defect), a nonempty region, comparative evidence, required_correction,
@@ -255,8 +300,9 @@ within its panel; verify all lines and indentation against the original.
 QA never edits slides itself. Send actionable findings back to the redesigner for the
 specific failing output slides, then rerender and review EVERY slide in order again.
 Confirm the original defect is gone, unaffected slides remain correct, and no new
-regression was introduced. After the bounded repair budget, unresolved defects still
-block release or require scoped review; never mark them fixed because a repair ran. Each
+regression was introduced. After the bounded repair budget, unresolved blocking/review
+defects still block release; cosmetic warnings permit release. Never mark defects fixed
+because a repair ran. Each
 criterion's status MUST equal the highest severity of findings assigned to THAT criterion;
 without findings it is passed or justified not_applicable. Do not mark secondary categories
 adverse merely because they experience consequences of another category's defect.
@@ -273,7 +319,7 @@ file-retention policy or universal factual truth beyond supplied evidence.'''
 class CriterionResult(BaseModel):
     model_config = ConfigDict(extra='forbid')
     criterion: Criterion
-    status: Literal['passed', 'review', 'blocking', 'not_applicable']
+    status: Literal['passed', 'warning', 'review', 'blocking', 'not_applicable']
     evidence: str = Field(min_length=1, max_length=600)
 
 
@@ -287,15 +333,26 @@ class RepairEvidence(BaseModel):
     acceptance_condition: str = Field(min_length=1, max_length=2000)
 
 
+def finding_status(findings):
+    """Warnings are visible but do not prevent a completed review from passing."""
+    severities=[f.get('severity') if isinstance(f,dict) else f.severity for f in findings]
+    return 'failed' if 'blocking' in severities else 'needs_review' if any(s!='warning' for s in severities) else 'passed'
+
+
 def validate_checks(checks, findings):
     keys = [c.criterion for c in checks]
     if len(keys) != len(CRITERIA) or set(keys) != set(CRITERIA):
         raise ValueError('Incomplete or duplicate rubric criteria.')
     for criterion in CRITERIA:
         owned = [f for f in findings if f.criterion == criterion]
-        expected = 'blocking' if any(f.severity == 'blocking' for f in owned) else 'review' if owned else None
+        expected = ('blocking' if any(f.severity == 'blocking' for f in owned) else
+                    'review' if any(f.severity == 'review' for f in owned) else 'warning' if owned else None)
         actual = next(c.status for c in checks if c.criterion == criterion)
         if expected and actual != expected:
             raise ValueError('Criterion status does not match its own findings.')
         if not expected and actual not in ('passed', 'not_applicable'):
             raise ValueError('Adverse rubric verdict lacks a finding in that criterion.')
+
+
+GENERATOR += "\n" + TEMPLATE_ROLE_RULE
+QA += "\n" + TEMPLATE_ROLE_RULE

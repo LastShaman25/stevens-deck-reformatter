@@ -30,6 +30,33 @@ def test_background_dependency_and_center_reference_are_preserved():
     assert result.elements[0].alignment_reference=='related'
 
 
+def test_only_unambiguous_missing_slide_component_is_normalized():
+    objects=[{'id':'digest/4/slide/10','parent':None},{'id':'digest/4/slide/11','parent':None}]
+    value=role_map(objects);value['elements'][0]['related_ids']=['digest/slide/11']
+    result=element_roles.validate(value,objects)
+    assert result.elements[0].related_ids==['digest/4/slide/11']
+    objects.append({'id':'digest/5/slide/11','parent':None})
+    value=role_map(objects);value['elements'][0]['related_ids']=['digest/slide/11']
+    with pytest.raises(ValueError,match='invalid ID'):element_roles.validate(value,objects)
+
+
+def test_source_contract_failure_still_runs_paired_qa_and_blocks_release(ai_session,monkeypatch):
+    reviewed=[];planned=[]
+    def provider(role,system,payload,*args,**kwargs):
+        result=mocked_provider(role,system,payload,*args,**kwargs)
+        if payload.get('stage')=='source_decisions':result['data']['elements'].pop()
+        if role=='reviewer':reviewed.append(payload['required_objects'][0]['id'])
+        if role=='planner':planned.append(payload)
+        return result
+    monkeypatch.setattr(pipeline.providers,'generate',provider)
+    record=generations.build(ai_session,mode='ai',repair_passes=0)
+    assert len(reviewed)==3 and not planned
+    assert record['checks']['ai_visual_review']['status']=='passed'
+    assert record['checks']['ai_redesign']['status']=='error'
+    assert record['ai_pipeline']['source_preparation_error']
+    assert not generations.download_allowed(record)
+
+
 @pytest.mark.parametrize('damage',['missing','duplicate','silent_blocker'])
 def test_qa_cannot_skip_criteria_or_hide_a_blocking_check(damage):
     values=passed_checks()
@@ -48,21 +75,28 @@ def test_missing_role_phase_stops_planning(ai_session,monkeypatch):
         return result
     monkeypatch.setattr(pipeline.providers,'generate',provider)
     record=generations.build(ai_session,mode='ai',repair_passes=0)
-    assert seen==['element_roles','element_roles']
+    assert seen==['element_roles','element_roles','reviewer','reviewer','reviewer']
     assert record['checks']['ai_redesign']['status']=='error'
 
 
 def test_planning_gets_validated_roles_and_template_context(ai_session,monkeypatch):
+    planned=[]
     def provider(role,system,payload,*args,**kwargs):
+        result=mocked_provider(role,system,payload,*args,**kwargs)
+        if role=='reviewer' and not planned:
+            f={**repair_evidence(),'criterion':'spatial_layout','severity':'review','message':'Synthetic spacing defect.'}
+            result['data'].update(verdict='needs_review',findings=[f],rubric=passed_checks([f]))
         if role=='planner':
+            planned.append(payload['slide'])
             expected={o['id'] for o in payload['objects']+payload['template_context']}
             assert {e['id'] for e in payload['element_roles']['elements']}==expected
             assert payload['template_context']
             assert all(not o['editable'] for o in payload['template_context'])
-        return mocked_provider(role,system,payload,*args,**kwargs)
+        return result
     monkeypatch.setattr(pipeline.providers,'generate',provider)
     record=generations.build(ai_session,mode='ai',repair_passes=0)
     assert record['checks']['ai_redesign']['status']=='passed'
+    assert planned==[0,1,2]
 
 
 def test_invalid_plan_is_corrected_once_before_editing(ai_session,monkeypatch):
@@ -70,6 +104,9 @@ def test_invalid_plan_is_corrected_once_before_editing(ai_session,monkeypatch):
     def provider(role,system,payload,*args,**kwargs):
         nonlocal planning_calls
         result=mocked_provider(role,system,payload,*args,**kwargs)
+        if role=='reviewer' and planning_calls==0:
+            f={**repair_evidence(),'criterion':'spatial_layout','severity':'review','message':'Needs spacing repair.'}
+            result['data'].update(verdict='needs_review',findings=[f],rubric=passed_checks([f]))
         if role=='planner':
             planning_calls+=1
             if planning_calls==1:result['data']['objects'].pop()
@@ -95,13 +132,16 @@ def test_candidate_roles_retry_before_planner_and_review_gets_template(ai_sessio
         if role=='reviewer':
             review_references.extend(label for label,_ in args[0] if label.startswith('APPROVED TEMPLATE:'))
             assert args[0][-1][0]=='FINAL CANDIDATE TO AUDIT (last image)'
-            assert 'ai-render-' in str(args[0][-1][1])
+            assert any(stage in str(args[0][-1][1]) for stage in ('ai-render-','ai-baseline-render'))
+            if role_calls==0:
+                f={**repair_evidence(),'criterion':'spatial_layout','severity':'review','message':'Needs spacing repair.'}
+                result['data'].update(verdict='needs_review',findings=[f],rubric=passed_checks([f]))
         return result
     monkeypatch.setattr(pipeline.providers,'generate',provider)
     record=generations.build(ai_session,mode='ai',repair_passes=0)
     assert record['checks']['ai_redesign']['status']=='passed'
     assert role_calls==4
-    assert 'APPROVED TEMPLATE: 1_Title Slide' in review_references
+    assert 'APPROVED TEMPLATE: Title Slide' in review_references
 
 
 def test_review_contract_correction_retains_the_observed_defect(ai_session,monkeypatch):
@@ -110,11 +150,10 @@ def test_review_contract_correction_retains_the_observed_defect(ai_session,monke
         result=mocked_provider(role,system,payload,*args,**kwargs)
         if role=='reviewer':
             seen.append(payload.get('validation_error'))
-            if len(seen)<=2:
-                finding={**repair_evidence(),'criterion':'spatial_layout','severity':'review','message':'Synthetic panel overlap.'}
-                result['data'].update(verdict='needs_review',findings=[finding],rubric=passed_checks([finding]))
-                if len(seen)==1:result['data']['verdict']='passed'
-                else:assert payload['previous_review']['findings'][0]['message']==finding['message']
+            finding={**repair_evidence(),'criterion':'spatial_layout','severity':'review','message':'Synthetic panel overlap.'}
+            result['data'].update(verdict='needs_review',findings=[finding],rubric=passed_checks([finding]))
+            if len(seen)==1:result['data']['verdict']='passed'
+            elif len(seen)==2:assert payload['previous_review']['findings'][0]['message']==finding['message']
         return result
     monkeypatch.setattr(pipeline.providers,'generate',provider)
     record=generations.build(ai_session,mode='ai',repair_passes=0)
@@ -122,7 +161,9 @@ def test_review_contract_correction_retains_the_observed_defect(ai_session,monke
     assert record['checks']['ai_visual_review']['status']=='needs_review'
     assert record['checks']['ai_visual_review']['findings'][0]['acceptance_condition']
     assert not record['output_qa_repairs'][0]['accepted']
-    assert 'no substantive change' in record['output_qa_repairs'][0]['reason']
+    assert 'regression' in record['output_qa_repairs'][0]['reason']
+    assert len(record['output_qa_repairs'])==3
+    assert 'Repeated rendered repairs' in record['output_qa_repairs'][-1]['reason']
 
 
 def test_each_finding_has_exactly_one_primary_category():

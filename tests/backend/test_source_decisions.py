@@ -27,7 +27,7 @@ def test_matching_slide_is_native_unchanged_and_tampering_is_detected(tmp_path):
     # A genuine bundled template slide: includes source theme, layout, master and art.
     p=Presentation(grounded.TEMPLATE_PATH)
     for sid,slide in list(zip(p.slides._sldIdLst,p.slides)):
-        if slide.slide_layout.name=='1_Title Slide': continue
+        if slide.slide_layout.name=='Title Slide': continue
         p.part.drop_rel(sid.rId); p.slides._sldIdLst.remove(sid)
     source=tmp_path/'source.pptx'; p.save(source)
     _,_,_,choice=decision(source,'keep_original')
@@ -130,7 +130,7 @@ def test_unchanged_template_slide_renders_identically(tmp_path):
     from PIL import ImageChops
     p=Presentation(grounded.TEMPLATE_PATH)
     for sid,slide in list(zip(p.slides._sldIdLst,p.slides)):
-        if slide.slide_layout.name=='1_Title Slide': continue
+        if slide.slide_layout.name=='Title Slide': continue
         p.part.drop_rel(sid.rId);p.slides._sldIdLst.remove(sid)
     source=tmp_path/'source.pptx';p.save(source)
     _,_,_,choice=decision(source,'keep_original')
@@ -250,7 +250,7 @@ def test_protected_code_and_logo_typography_survive_and_tampering_blocks(tmp_pat
 def test_keep_original_canvas_rounding_is_validated_early(tmp_path,difference):
     p=Presentation(grounded.TEMPLATE_PATH)
     for sid,slide in list(zip(p.slides._sldIdLst,p.slides)):
-        if slide.slide_layout.name=='1_Title Slide': continue
+        if slide.slide_layout.name=='Title Slide': continue
         p.part.drop_rel(sid.rId);p.slides._sldIdLst.remove(sid)
     p.slide_width-=difference
     source=tmp_path/'rounded.pptx';p.save(source)

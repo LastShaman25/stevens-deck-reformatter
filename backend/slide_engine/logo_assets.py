@@ -150,10 +150,11 @@ Requires BOTH a strict image match and the independent semantic crop review. Whe
 auditing an exported slide, also verify its inherited artwork against the bundle.
 """
     from pptx import Presentation
-    from . import inventory
+    from . import inventory, template_policy as T
     source=_features(Image.open(BytesIO(crop_blob)))
     p=Presentation(TEMPLATE)
-    reference=p.slides.add_slide(next(l for l in p.slide_layouts if l.name==('1_Title Slide' if cover else 'Title Only')))
+    wanted = actual_slide.slide_layout.name if actual_slide is not None else T.OPENING_LAYOUT if cover else 'Title Only'
+    reference=p.slides.add_slide(next(l for l in p.slide_layouts if l.name==wanted))
     with ZipFile(TEMPLATE) as z:
         approved={sha256(z.read(n)).hexdigest():(n,region) for n,region in APPROVED_REGIONS.items() if n in z.namelist()}
     for origin,_,shape in inventory.source_objects(reference):

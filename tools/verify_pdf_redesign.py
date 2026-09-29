@@ -17,6 +17,7 @@ def main():
     p.add_argument('--output',type=Path,required=True)
     p.add_argument('--math-fixture',action='store_true',help='Also test tightly spaced PDF math and annotation lines.')
     p.add_argument('--cover-footer-fixture',action='store_true',help='Test a white cover background, multiple metadata rows and a low footnote.')
+    p.add_argument('--deck-fixture',action='store_true',help='Exercise redesign and paired QA across a 12-page synthetic deck, including a closing page.')
     args=p.parse_args()
     if args.output.exists():p.error('Use a new evidence directory.')
     if not providers.capabilities()['configured']:p.error('Configure the AI providers first.')
@@ -49,6 +50,15 @@ def main():
         ]
         for i,line in enumerate(lines):page.insert_text((50,105+i*17),line,fontsize=14)
         page.insert_text((50,255),'Check: keep both terms, every prime, and the factor order.',fontsize=10)
+    if args.deck_fixture:
+        for number in range(1,11):
+            page=pdf.new_page(width=960,height=540)
+            page.insert_text((50,100),f'Doubling {number}',fontsize=32)
+            page.insert_text((50,180),f'{number} + {number} = {2*number}',fontsize=24)
+            page.insert_text((50,240),f'Two equal groups of {number} contain {2*number} items altogether.',fontsize=20)
+        page=pdf.new_page(width=960,height=540)
+        page.insert_text((50,100),'Thank you!',fontsize=32)
+        page.insert_text((50,180),'Questions and discussion',fontsize=20)
     pdf.save(args.output/'input.pdf');pdf.close()
     info=api.analyze_upload('synthetic.pdf',(args.output/'input.pdf').read_bytes())
     s=sessions.get(info['session_id'])

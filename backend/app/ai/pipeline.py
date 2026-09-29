@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Literal
 import json
 import shutil
+import time
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pptx import Presentation
 from slide_engine.inventory import sha256
@@ -23,7 +24,9 @@ charts and groups. Locked geometry must remain unchanged. Template context IDs a
 non-editable obstacles, not entries in the output edit list. Follow template_contract:
 interior content stays in content_box and never covers the fixed bottom-left logo.
 Do not shrink, detach or move background artwork as if it were ordinary body content.
-Title text is Arial 40pt under the current native editor constraint, body
+Native template titles marked |title are Arial 40pt. Existing PDF headings may
+retain their current size. Use role=keep unless explicitly applying a text style;
+semantic element roles are already supplied separately. Body
 preferably 16-20pt, never below 11pt; use approved charcoal/red/white where appropriate.
 No text outside boxes, clipped content, overlapping labels, or white text on white.
 Respect each text frame's margins. The text_fit_ratio is estimated text height divided
@@ -55,7 +58,8 @@ master decorations together with source logos and footers; branding collisions a
 exempt from QA. Object IDs may refer to editable source content or template context.
 Do not report an issue merely because native source geometry was changed. Do not pass
 a slide that requires repair. Use blocking for missing/altered meaning or unreadable
-essential content; use review for visual/style uncertainty and nonessential layout issues.
+essential content; use review for uncertainty about material harm, and warning for
+cosmetic spacing/alignment with readable, intact content. Warning-only slides pass.
 Return strict JSON matching the schema. Assign exactly one primary criterion per finding,
 with severity, object_ids and a message identifying the observation and smallest repair.
 Use an empty findings list only when no visible problem is found. Never invent object IDs.
@@ -65,7 +69,7 @@ Return the supplied schema including rubric: one evidence-backed result for each
 class VisualFinding(rubric.RepairEvidence):
     model_config=ConfigDict(extra='forbid')
     criterion: Criterion
-    severity: Literal['blocking','review']
+    severity: Literal['blocking','review','warning']
     message: str = Field(min_length=1,max_length=2000)
 
     @property
@@ -105,7 +109,7 @@ def check(source,candidate,report,directory):
 
 
 def execute(sess,candidate,report,directory,repair_passes=1,progress=lambda **kwargs:None,
-            initial_feedback=None, calls_used=0):
+            initial_feedback=None, calls_used=0, prior_review=None):
     directory=Path(directory)
     directory.mkdir(parents=True,exist_ok=True)
     config=providers.capabilities()
@@ -117,11 +121,18 @@ def execute(sess,candidate,report,directory,repair_passes=1,progress=lambda **kw
     def call(role,system,payload,images,index,attempt):
         progress(stage='identifying_element_roles' if role=='element_roles' else 'planning' if role=='planner' else 'visual_review',output_slide=index,
                  attempt=attempt,completed_calls=len(ai['calls']),max_calls=max_calls)
+        started=time.monotonic()
         if calls_used+len(ai['calls'])>=max_calls:
             result={'status':'budget_exhausted','message':f'The configured limit of {max_calls} AI calls was reached.'}
         else:result=providers.generate(role,system,payload,images,max_tokens=16000 if role in ('planner','element_roles') else 10000)
         ai['calls'].append({'role':'source_decision' if payload.get('stage')=='source_decisions' else 'logo_extraction_review' if payload.get('stage')=='logo_extraction_review' else role,'output_slide':index,'attempt':attempt,
+                           'elapsed_seconds':round(time.monotonic()-started,3),
                            **{k:v for k,v in result.items() if k!='data'}})
+        # Processing-only evidence makes real rejected plans/reviews reproducible.
+        # It expires with this upload; no source content enters permanent logs.
+        (directory/f'call-{len(ai["calls"]):03d}-{role}-{index}.json').write_text(
+            json.dumps({'request_stage':payload.get('stage'),'attempt':attempt,
+                        'output_slide':index,**result}),encoding='utf-8')
         return result
 
     def error_result(message,status='error'):
@@ -136,6 +147,7 @@ def execute(sess,candidate,report,directory,repair_passes=1,progress=lambda **kw
     from . import source_decisions
     from .. import grounded
     template_images=[]
+    preparation_problem=None
     try:
         references=render_verify.check(grounded.TEMPLATE_PATH,directory/'template-reference-render')
         if references.get('status')=='error' or not references.get('pages'):
@@ -148,10 +160,17 @@ def execute(sess,candidate,report,directory,repair_passes=1,progress=lambda **kw
         if not initial_feedback:
             decisions,_=source_decisions.run(sess,progress,generate=lambda role,system,payload,images,max_tokens:
                 call(role,system,payload,images,payload['source_slide'],-1),template_images=template_images)
-            report=grounded.build_deck(sess.source_path,candidate,revisions=sess.revisions,source_decisions=decisions)
+            report=grounded.build_deck(sess.source_path,candidate,revisions=sess.revisions,source_decisions=decisions,
+                                       require_closing=report.get('require_closing',False))
     except Exception as exc:
         problem=error_result('Source/template preparation failed: '+str(exc)[:1000])
-        return report,{'ai_redesign':problem,'ai_visual_review':{'status':'not_run','findings':[]}},ai
+        if not template_images:
+            return report,{'ai_redesign':problem,'ai_visual_review':{'status':'not_run','findings':[]}},ai
+        # The conservative native candidate already exists. A source-role
+        # contract failure must not suppress diagnostic paired QA. Preserve
+        # the error/release gate and prohibit edits without validated decisions.
+        preparation_problem=problem
+        ai['source_preparation_error']=problem['findings'][0]['message']
 
     baseline=directory/'ai-baseline.pptx';shutil.copyfile(candidate,baseline)
     current=baseline;current_report=deepcopy(report)
@@ -160,42 +179,70 @@ def execute(sess,candidate,report,directory,repair_passes=1,progress=lambda **kw
         problem=error_result('The baseline artifact or renderer could not be verified. AI calls were not started.')
         return report,{**current_checks,'ai_redesign':problem,'ai_visual_review':{'status':'not_run','findings':[]}},ai
     current_render=directory/'ai-baseline-render'
+    providers.reserve_redesign_review(sess, len(Presentation(current).slides))
     accepted=False;final_reviews=[];visual_check={'status':'not_run','findings':[]}
     targets={f['output_slide'] for f in initial_feedback} if initial_feedback else None
+    review_cache={r['evidence_sha256']:r for r in (prior_review or {}).get('reviews',[])
+                  if r.get('evidence_sha256') and r.get('verdict')=='passed'}
 
     def review(candidate,report,renderdir,attempt):
         prs=Presentation(candidate);reviews=[];findings=[]
         source_prs=Presentation(sess.source_path);source_digest=sha256(sess.source_path)
         reverse={o:int(s) for s,outs in report['source_to_output_slides'].items() for o in outs}
+        from slide_engine import bookends
+        additions=bookends.validate_added(prs,report)
         for i,slide in enumerate(prs.slides):
-            original=Path(sess.preview_path(reverse[i],'before'))
-            if not original.is_file():
-                return {'status':'error','findings':[{'code':'ORIGINAL_REVIEW_IMAGE_MISSING','severity':'blocking',
-                    'output_slide':i,'message':'Paired redesign QA requires the original screenshot.'}]},reviews
-            images=[('Original source slide',original)]
+            sess.redesign_review_remaining = len(prs.slides)-i
+            original=Path(sess.preview_path(reverse[i],'before')) if i in reverse else None
+            if i not in additions and (original is None or not original.is_file()):
+                findings.append({'code':'ORIGINAL_REVIEW_IMAGE_MISSING','severity':'blocking',
+                    'output_slide':i,'message':'Paired redesign QA requires the original screenshot.'})
+                continue
+            images=[('Original source slide',original)] if original else []
             images += [(label,path) for label,path in template_images if label=='APPROVED TEMPLATE: '+slide.slide_layout.name]
             images.append(('FINAL CANDIDATE TO AUDIT (last image)',renderdir/f'slide-{i}.png'))
             objects=layout.describe(slide)
             context=layout.template_context(slide)
-            source_objects=source_decisions.source_objects(source_prs,reverse[i],source_digest)
+            source_objects=source_decisions.source_objects(source_prs,reverse[i],source_digest) if i in reverse else []
             prior=[f for c in list(current_checks.values())+[visual_check] for f in c.get('findings',[])
                    if f.get('output_slide')==i]
             prior += [f for f in initial_feedback or [] if f.get('output_slide')==i]
             review_payload={'required_objects':objects,'template_context':context,'template_contract':T.contract(slide),
                 'original_objects':source_objects,'repair_acceptance_checks':prior,
-                'source_decision':report.get('source_decisions',{}).get(str(reverse[i]),{}),
+                'source_decision':report.get('source_decisions',{}).get(str(reverse.get(i)),{}),
+                'authorized_addition':bookends.AUTHORIZATION if i in additions else None,
                 'role_analysis':[m for m in ai['element_roles'] if m['output_slide']==i][-1:],
                 'rubric_version':rubric.VERSION,'schema':VisualReview.model_json_schema()}
+            import hashlib
+            # Reuse only a passing review of exactly the same original, rendered
+            # slide, native inventory, template artwork/contract, and rubric.
+            # New QA acceptance conditions always require a fresh model review.
+            evidence={k:v for k,v in review_payload.items() if k!='repair_acceptance_checks'}
+            evidence['images']=[(label,sha256(path)) for label,path in images]
+            evidence_digest=hashlib.sha256(json.dumps(evidence,sort_keys=True).encode()).hexdigest()
+            qa_conditions=[f for f in visual_check.get('findings',[])+list(initial_feedback or []) if f.get('output_slide')==i]
+            cached=review_cache.get(evidence_digest) if not qa_conditions else None
+            value=None
+            if cached:
+                try:
+                    value=VisualReview.model_validate({k:cached[k] for k in VisualReview.model_fields})
+                    rubric.validate_checks(value.rubric,value.findings)
+                    if value.verdict!='passed' or rubric.finding_status(value.findings)!='passed': value=None
+                except (ValidationError,ValueError,KeyError):value=None
+            reused=value is not None
             for validation_attempt in range(2):
+                if reused: break
                 response=call('reviewer',REVIEW_SYSTEM,review_payload,images,i,attempt)
                 if response['status']!='completed':
-                    return {'status':'error','findings':[{'code':'AI_REVIEW_INCOMPLETE','severity':'blocking','output_slide':i,'message':response.get('message','AI review failed.')}]},reviews
+                    findings.append({'code':'AI_REVIEW_INCOMPLETE','severity':'blocking','output_slide':i,'message':response.get('message','AI review failed.')})
+                    value=None
+                    break
                 try:
                     value=VisualReview.model_validate(response['data'])
                     ids={o['id'] for o in objects+context+source_objects}
                     if any(not set(f.object_ids)<=ids for f in value.findings):raise ValueError('Unknown visual finding IDs')
                     rubric.validate_checks(value.rubric,value.findings)
-                    verdict='failed' if any(f.severity=='blocking' for f in value.findings) else 'needs_review' if value.findings else 'passed'
+                    verdict=rubric.finding_status(value.findings)
                     if value.verdict!=verdict:raise ValueError('Inconsistent visual verdict')
                     break
                 except (ValidationError,ValueError,TypeError) as exc:
@@ -203,13 +250,23 @@ def execute(sess,candidate,report,directory,repair_passes=1,progress=lambda **kw
                     message='The visual response failed validation: '+str(detail)[:1200]
                     ai.setdefault('review_validation_errors',[]).append({'output_slide':i,'attempt':attempt,'message':message})
                     if validation_attempt:
-                        return {'status':'error','findings':[{'code':'AI_REVIEW_INVALID','severity':'blocking','output_slide':i,'message':message}]},reviews
+                        findings.append({'code':'AI_REVIEW_INVALID','severity':'blocking','output_slide':i,'message':message})
+                        value=None
+                        break
                     review_payload['validation_error']=message
                     review_payload['previous_review']=response['data']
                     review_payload['instruction']='Correct the contract error in the prior review using the same evidence. Retain supported observations and their acceptance conditions; do not erase findings simply to pass validation. Return the complete review.'
-            reviews.append({'output_slide':i,**value.model_dump(),'candidate_sha256':sha256(candidate)})
+            if value is None: continue
+            receipt={'output_slide':i,**value.model_dump(),'candidate_sha256':sha256(candidate),
+                     'evidence_sha256':evidence_digest}
+            if reused:
+                receipt['reused_from_candidate_sha256']=cached['candidate_sha256']
+                ai.setdefault('reused_reviews',[]).append({'output_slide':i,'attempt':attempt,'evidence_sha256':evidence_digest})
+            reviews.append(receipt)
+            if value.verdict=='passed':review_cache[evidence_digest]=receipt
             findings += [{'code':'AI_VISUAL_'+f.category.upper(),'output_slide':i,**f.model_dump()} for f in value.findings]
-        return {'status':'failed' if any(f['severity']=='blocking' for f in findings) else 'needs_review' if findings else 'passed',
+        sess.redesign_review_remaining = 0
+        return {'status':'error' if any(f['code'] in ('AI_REVIEW_INCOMPLETE','AI_REVIEW_INVALID','ORIGINAL_REVIEW_IMAGE_MISSING') for f in findings) else rubric.finding_status(findings),
                 'findings':findings,'candidate_sha256':sha256(candidate)},reviews
 
     def score(checks,visual=None):
@@ -217,9 +274,34 @@ def execute(sess,candidate,report,directory,repair_passes=1,progress=lambda **kw
         errors=sum(r['status']=='error' for r in checks.values())
         return (errors+sum(f.get('severity','blocking')=='blocking' for f in findings),
                 sum(f.get('severity')=='blocking' for f in (visual or {}).get('findings',[])),
-                len((visual or {}).get('findings',[])),len(findings))
+                sum(f.get('severity')!='warning' for f in (visual or {}).get('findings',[])),sum(f.get('severity')!='warning' for f in findings))
 
+    # Review the actual native composition before requesting edits. Previously a
+    # planner was forced to rewrite every slide, and its first invalid plan
+    # discarded the whole deck before the QA repair loop could make progress.
+    reusable=(prior_review or {}).get('reviews',[])
+    if (initial_feedback and len(reusable)==len(Presentation(current).slides)
+            and {r.get('output_slide') for r in reusable}==set(range(len(reusable)))
+            and all(r.get('candidate_sha256')==sha256(current) for r in reusable)
+            and (prior_review or {}).get('check',{}).get('status') in ('passed','failed','needs_review')):
+        visual_check=deepcopy(prior_review['check']);final_reviews=deepcopy(reusable)
+        ai['baseline_review_reused']={'candidate_sha256':sha256(current),'reviewed_slides':len(reusable)}
+    else:
+        visual_check,final_reviews=review(current,current_report,current_render,-1)
+    if visual_check['status']!='error':
+        accepted=True
+    if targets is None:
+        targets={f['output_slide'] for c in list(current_checks.values())+[visual_check]
+                 for f in c.get('findings',[]) if 'output_slide' in f
+                 and ((c is visual_check and f.get('severity')!='warning') or f.get('severity')=='blocking')}
+    if preparation_problem:targets=set()
     for attempt in range(repair_passes+1):
+        if not targets or visual_check['status']=='error': break
+        # Only targeted or previously unresolved slides require new paired calls;
+        # passing unchanged evidence can be reused. Full ordered QA is reserved
+        # separately and still runs after the edits.
+        unresolved={r['output_slide'] for r in final_reviews if r.get('verdict')!='passed'}
+        providers.reserve_redesign_review(sess,len(set(targets)|unresolved))
         checkpoint=(current,current_report,current_checks,current_render)
         # Source decisions are reversible. A missing picture cannot be recovered
         # through coordinate edits; reconsider its source decision before replanning.
@@ -230,17 +312,18 @@ def execute(sess,candidate,report,directory,repair_passes=1,progress=lambda **kw
         decision_feedback=[f for f in decision_feedback if 'output_slide' in f and (f.get('criterion') in
                            ('content_presence','structure_sequence','brand_consistency','instruction_compliance')
                            or f.get('output_slide') in extraction_outputs)]
-        if decision_feedback and (attempt or initial_feedback):
+        if decision_feedback:
             try:
                 reverse={o:int(s) for s,outs in current_report['source_to_output_slides'].items() for o in outs}
-                feedback=[{**f,'source_slide':reverse[f['output_slide']]} for f in decision_feedback]
+                feedback=[{**f,'source_slide':reverse[f['output_slide']]} for f in decision_feedback if f['output_slide'] in reverse]
                 affected={f['source_slide'] for f in feedback}
                 choices,_=source_decisions.run(sess,progress,indices=affected,feedback=feedback,template_images=template_images,
                     generate=lambda role,system,payload,images,max_tokens:call(role,system,payload,images,payload['source_slide'],attempt))
                 revised={**current_report.get('source_decisions',{}),**choices}
                 if revised!=current_report.get('source_decisions',{}):
                     fresh=directory/f'decision-source-{attempt}.pptx'
-                    fresh_report=grounded.build_deck(sess.source_path,fresh,revisions=sess.revisions,source_decisions=revised)
+                    fresh_report=grounded.build_deck(sess.source_path,fresh,revisions=sess.revisions,source_decisions=revised,
+                                                     require_closing=current_report.get('require_closing',False))
                     if fresh_report['source_to_output_slides']!=current_report['source_to_output_slides']:
                         raise ValueError('Decision repair would change slide mapping; a fresh generation is required.')
                     affected_outputs={o for si in affected for o in current_report['source_to_output_slides'][str(si)]}
@@ -264,12 +347,12 @@ def execute(sess,candidate,report,directory,repair_passes=1,progress=lambda **kw
                 visual_check=error_result('Source-decision repair could not complete: '+str(exc)[:1000])
                 break
         prs=Presentation(current);plans={};reverse={o:int(s) for s,outs in current_report['source_to_output_slides'].items() for o in outs}
-        failed=None
+        failed=None;failed_slides={}
         for i,slide in enumerate(prs.slides):
             if targets is not None and i not in targets:continue
             if T.is_preserved(slide): continue
-            original=Path(sess.preview_path(reverse[i],'before'))
-            images=([('Original source slide',original)] if original.exists() else [])+[('Current candidate',current_render/f'slide-{i}.png')]
+            original=Path(sess.preview_path(reverse[i],'before')) if i in reverse else None
+            images=([('Original source slide',original)] if original and original.exists() else [])+[('Current candidate',current_render/f'slide-{i}.png')]
             feedback=[f for c in list(current_checks.values())+[visual_check] for f in c.get('findings',[]) if f.get('output_slide')==i]
             feedback += [f for f in (initial_feedback or []) if f.get('output_slide')==i]
             objects=layout.describe(slide);context=layout.template_context(slide)
@@ -286,18 +369,22 @@ def execute(sess,candidate,report,directory,repair_passes=1,progress=lambda **kw
                     failed='Element-role identification rejected: '+str(detail)[:1200]
                     role_payload['validation_error']=failed
                     role_payload['instruction']='Correct the rejected role map against the exact supplied IDs, parent values and relationships. Return the complete schema.'
-            if failed:break
+            if failed:
+                failed_slides[i]=failed
+                continue
             ai['element_roles'].append({'output_slide':i,'attempt':attempt,**roles.model_dump()})
             payload={'slide':i,'width':prs.slide_width/layout.EMU,'height':prs.slide_height/layout.EMU,
                      'objects':objects,'template_context':context,'template_contract':T.contract(slide),'element_roles':roles.model_dump(),
-                     'rubric_version':rubric.VERSION,'reviewer_note':sess.revisions.get(str(reverse[i]),{}).get('instruction',''),
+                     'rubric_version':rubric.VERSION,'reviewer_note':sess.revisions.get(str(reverse.get(i)),{}).get('instruction',''),
                      'findings':feedback,'schema':layout.LayoutPlan.model_json_schema()}
             for validation_attempt in range(2):
                 result=call('planner',PLANNER_SYSTEM,payload,images,i,attempt)
                 if result['status']!='completed':
                     failed=result.get('message','AI planning did not complete.');break
+                plan=None
                 try:
                     plan=layout.LayoutPlan.model_validate(result['data'])
+                    plan=layout.constrain(plan,slide,feedback,roles)
                     plans[i]=layout.validate(plan,slide,prs.slide_width/layout.EMU,prs.slide_height/layout.EMU)
                     failed=None;break
                 except (ValidationError,ValueError,TypeError) as exc:
@@ -306,23 +393,19 @@ def execute(sess,candidate,report,directory,repair_passes=1,progress=lambda **kw
                     # One bounded contract correction, before any native edits.
                     # Invalid plans never reach the renderer or approval gate.
                     payload['validation_error']=failed
-                    payload['previous_plan']=result.get('data')
+                    payload['previous_plan']=plan.model_dump() if plan is not None else result.get('data')
                     payload['instruction']='Correct the rejected plan against the supplied editable object IDs and constraints. Return the complete schema.'
                     ai.setdefault('plan_validation_errors',[]).append({'output_slide':i,'attempt':attempt,
                         'validation_attempt':validation_attempt,'message':failed})
-            if failed:break
-        if failed:
-            current,current_report,current_checks,current_render=checkpoint
-            ai['attempts'].append({'attempt':attempt,'accepted':False,'reason':failed})
-            if not accepted:
-                problem=error_result(failed)
-                # A rejected layout must not suppress QA of the rendered native
-                # composition. Its review is diagnostic: redesign remains error.
-                visual_check,final_reviews=review(current,current_report,current_render,attempt)
-                shutil.copyfile(current,candidate)
-                ai.update(final_reviews=final_reviews,candidate_sha256=sha256(candidate),completed_calls=len(ai['calls']))
-                return current_report,{**current_checks,'ai_redesign':problem,'ai_visual_review':visual_check},ai
-            visual_check=error_result('The requested repair did not complete: '+failed)
+            if failed: failed_slides[i]=failed
+        if failed_slides:
+            ai.setdefault('rejected_slide_plans',[]).append({'attempt':attempt,'slides':failed_slides})
+        # Invalid slide plans never mutate the candidate. Valid independent plans
+        # still reach the renderer and QA; unresolved slides remain release-blocking
+        # through their actual findings rather than suppressing the whole workflow.
+        if not plans and current==checkpoint[0]:
+            ai['attempts'].append({'attempt':attempt,'accepted':False,
+                                  'reason':'No valid slide repairs were proposed.','failed_slides':failed_slides})
             break
         proposed=directory/f'ai-attempt-{attempt}.pptx'
         proposed_report,changed=layout.apply(current,proposed,plans,current_report)
@@ -336,7 +419,7 @@ def execute(sess,candidate,report,directory,repair_passes=1,progress=lambda **kw
             break
         reviewed,reviews=review(proposed,proposed_report,proposed_render,attempt)
         before=score(checkpoint[2],visual_check);after=score(checks,reviewed)
-        accept=after[0]<=before[0] and (not accepted or after<before)
+        accept=after[0]<=before[0] and (not accepted or after<before or reviewed['status']=='passed')
         ai['attempts'].append({'attempt':attempt,'accepted':accept,'changed_objects':changed,'before':before,'after':after,
                                'candidate_sha256':sha256(proposed),'plans':{str(i):p.model_dump() for i,p in plans.items()},'reviews':reviews})
         if not accept:
@@ -346,9 +429,11 @@ def execute(sess,candidate,report,directory,repair_passes=1,progress=lambda **kw
         current,current_report,current_checks,current_render=proposed,proposed_report,checks,proposed_render
         visual_check,final_reviews=reviewed,reviews;accepted=True;ai['changed_objects']+=changed
         if reviewed['status']=='error':break
-        targets={f['output_slide'] for c in list(checks.values())+[reviewed] for f in c.get('findings',[]) if 'output_slide' in f}
+        targets={f['output_slide'] for c in list(checks.values())+[reviewed] for f in c.get('findings',[])
+                 if 'output_slide' in f and ((c is reviewed and f.get('severity')!='warning') or f.get('severity')=='blocking')}
         if not targets:break
     shutil.copyfile(current,candidate)
+    sess.redesign_review_remaining=0
     final_render=directory/'render'
     shutil.copytree(current_render,final_render)
     # Render evidence is unchanged bytes, now served from the stable final directory.
@@ -362,4 +447,6 @@ def execute(sess,candidate,report,directory,repair_passes=1,progress=lambda **kw
         correction['actions'].append({'action':'ai_redesign','status':'applied' if accepted and ai['changed_objects'] else 'no_change',
                                       'message':'AI layout proposal independently verified.' if accepted else 'AI redesign was rejected; preserved candidate retained.'})
     planning={'status':'passed' if accepted else 'error','findings':[] if accepted else [{'code':'AI_REDESIGN_INCOMPLETE','severity':'blocking','message':'No valid AI redesign was accepted.'}]}
+    if preparation_problem:
+        planning=preparation_problem;ai['status']='error'
     return current_report,{**current_checks,'ai_redesign':planning,'ai_visual_review':visual_check},ai

@@ -1,12 +1,14 @@
 # Stevens redesign and output QA rubric
 
-Version: `cover-photo-clear-10` · September 25, 2026
+Version: `required-closing-15` · September 28, 2026
 
 ## Governing principle
 
 Preserve a composition that works. Make the smallest change that addresses an observable defect or the user's instruction. An unchanged slide can pass. Creativity is allowed where it improves communication; novelty, additional decoration, and rigid symmetry are not objectives.
 
-The first page uses **1_Title Slide**. Extract native title and supporting elements and place them in its cover regions. Regular content pages use **Title Only**: all source elements belong inside the content box. The inherited **bottom-left Stevens logo and footer band are protected**. Source logos, footer strips, text, images and backgrounds must not cover that area.
+Every output deck must end with **Thank you!** on the approved statue-photo closing layout. For redesign, preserve all original pages, including a final references/content page, then append the required closing if there is no suitable final Thank you page. Reuse an existing suitable closing instead of duplicating it. The added page has explicit user-authorized provenance, separate from source-slide mappings; its exact native content and final position are checked independently. It has no fabricated source original: visual QA compares it against the authorization and template reference, and includes it in the full ordered review. Missing, moved, altered, or unreviewed closings inhibit release. New-deck outlines include the Thank you title before approval.
+
+The first page uses **Title Slide**: mostly burgundy/red, a faint tower on the left, and the white Stevens mark at top-right, with NO campus/statue photo. The closing uses **1_Title Slide**: statue photograph on the left, burgundy on the right, and closing/thank-you text. These file names are misleading: `1_Title Slide` is the CLOSING design, never the opening. Do not substitute `Thank You Slide`, which uses a different balloon photograph. Extract native title and supporting elements and place them in its cover regions. Regular content pages use **Title Only**: all source elements belong inside the content box. The inherited **bottom-left Stevens logo and footer band are protected**. Source logos, footer strips, text, images and backgrounds must not cover that area.
 
 ## Approved section-header reference
 
@@ -37,7 +39,7 @@ These observations concern the visible screenshots, not a forensic inspection of
 1. **Identify roles before layout planning.** Inspect source and candidate screenshots and the complete editable-object inventory plus inherited template artwork. Assign each supplied ID exactly once: title, subtitle, body, code, equation, logo, footer, background, panel, decoration, image, chart, table, diagram, caption, axis label, legend, connector, group, or unknown.
 2. **Record relationships and intent.** Record dependencies (text/background, code/panel, label/chart, caption/figure, multipart logo), alignment, its reference frame, confidence and reasoning. Do not guess that everything should be centered. Unknown is preferable to a false confident role.
 3. **Validate the inventory.** Missing, duplicated or invented IDs and invalid relationship references stop planning. Role classification is a required model call, not an optional sentence in a prompt. Record it with the generation and repeat it for targeted repair passes.
-4. **Plan minimal edits.** Use the validated inventory. Move related elements coherently. Keep background/foreground contrast and layer order. Preserve correct regions; explain the defect or instruction driving each proposed layout. An invalid layout contract gets at most one correction request with validation feedback, before any edit is applied; a second failure blocks redesign.
+4. **Plan minimal edits.** Use the validated inventory. Move related elements coherently. Keep background/foreground contrast and layer order. Preserve correct regions; explain the defect or instruction driving each proposed layout. An invalid layout contract gets at most one correction request with validation feedback, before any edit is applied; a second failure leaves that slide unresolved without discarding valid repairs on other slides. QA still reviews the retained candidate, and unresolved defects block release.
 5. **Apply and independently verify.** Keep original wording, data, relationships and meaningful emphasis. Reopen the native PPTX, run structural/content checks, render, and apply the visual rubric. Every accepted candidate remains provisional until mandatory QA passes.
 6. **Review the complete output in order.** A separate reviewer audits all final screenshots and then the full ordered deck. Incomplete review or missing rubric coverage blocks verified release.
 7. **Return final QA findings to the redesigner.** Send rubric category, evidence, smallest repair and affected output-slide indices. Replan only affected slides, then rerender and review every slide in order. Accept a repair only when final QA improves without technical regression. Continue improving repair cycles until every per-slide and ordered-deck QA check explicitly passes, subject to the upload request/token budget and session deadline. The legacy repair-pass setting cannot disable this final gate. An unchanged or worse result retains the earlier candidate and its unresolved findings. Running a repair never counts as passing QA.
@@ -49,13 +51,13 @@ Coordinates below are inches in the bundled 13.333 × 7.5 template.
 | Region | x | y | width | height |
 | --- | ---: | ---: | ---: | ---: |
 | Interior content box | 0.70 | 0.40 | 11.70 | 6.05 |
-| Cover title | 6.917 | 2.739 | 5.693 | 2.255 |
-| Cover supporting text | 7.75 | 5.021 | 4.86 | 1.664 |
-| Cover supporting graphics | 0.45 | 1.15 | 5.95 | 5.30 |
+| Opening title | 4.648 | 2.739 | 7.962 | 2.255 |
+| Opening supporting text | 5.114 | 5.021 | 7.496 | 1.664 |
+| Opening supporting graphics | 0.55 | 2.74 | 3.60 | 3.50 |
 | Section title (below top-right logo) | 7.236 | 2.50 | 5.374 | 3.22 |
 | Section supporting text | 7.50 | 5.90 | 5.11 | 1.02 |
 
-The interior box ends at y=6.45, above the footer band starting at y=6.65. This applies to group children, original footer bars and backgrounds as well as ordinary text. Cover title/supporting text is white against the template's red field. The cover has approved campus imagery on the left and a white Stevens mark at top-right. **The interior bottom-left/footer restriction does not apply to covers or section headers.** Its inherited photo and rule are permitted template artwork, not unapproved additions or factual claims. QA must cross-check supplied coordinates before alleging an out-of-box placement.
+The interior box ends at y=6.45, above the footer band starting at y=6.65. This applies to group children, original footer bars and backgrounds as well as ordinary text. Cover title/supporting text is white against the template's red field. The opening has the faint tower on the left and a white Stevens mark at top-right, without a campus/statue photograph. The statue photograph belongs only to the closing. **The interior bottom-left/footer restriction does not apply to covers or section headers.** Approved inherited artwork and rules are template decoration, not factual claims. QA must cross-check supplied coordinates before alleging an out-of-box placement.
 
 Initial native extraction recognizes ordinary text boxes as possible titles using native title identity, font hierarchy and reading order. It records this hypothesis before placement; the mandatory AI role pass rechecks it before AI editing. Unknown graphics remain native objects, not silently deleted decorations. Explicit RGB source backgrounds are preserved as fixed panels to retain white-text contrast; their color, bounds, count and layer order are independently checked against the source.
 
@@ -117,14 +119,17 @@ MECE is an operational classification rule, not a claim that design qualities ar
 
 ## Verdict and evidence contract
 
-For each slide, record all eight category results: `passed`, `review`, `blocking`, or justified `not_applicable`. Every finding carries exactly one `criterion`, affected slide/elements/region, observable evidence, severity, `required_correction` and a testable `acceptance_condition`. Both reviewer schemas require nonempty `region`, `evidence`, `required_correction` and `acceptance_condition`, plus `object_ids` (empty only when the supplied IDs cannot locate the defect). Missing or blank handoff fields invalidate the review.
+For each slide, record all eight category results: `passed`, `warning`, `review`, `blocking`, or justified `not_applicable`. Every finding carries exactly one `criterion`, affected slide/elements/region, observable evidence, severity, `required_correction` and a testable `acceptance_condition`. Both reviewer schemas require nonempty `region`, `evidence`, `required_correction` and `acceptance_condition`, plus `object_ids` (empty only when the supplied IDs cannot locate the defect). Missing or blank handoff fields invalidate the review.
 
 - `blocking`: confirmed lost/changed essential meaning, misleading data, unreadable essentials, or corrupted branding.
-- `review`: genuine uncertainty or a minor observable defect. Lack of evidence cannot be converted into a pass.
+- `review`: genuine uncertainty about a material defect, with the possible harm identified. Lack of evidence cannot be converted into a pass.
+- `warning`: optional cosmetic polish with readable content and intact meaning, associations, branding, and required template. Small caption gaps and independent code-box alignment are suggestions unless they obscure content or change meaning. Meaning-changing textual code indentation remains blocking.
 - `passed`: applicable category inspected with no observed defect.
 - `not_applicable`: an explicit explanation of why the category cannot apply; never a shortcut around missing review.
 
 For each category, the checklist must equal the **highest severity of findings assigned to that category**. No owned findings means passed or justified not-applicable. A blocking layout finding cannot justify an adverse branding or readability checkbox. Conversely, a passed checkbox cannot hide its own finding. Missing/duplicate categories and inconsistent results invalidate the review.
+
+A completed review containing only warnings has overall status `passed`; its warning findings remain visible as suggestions. Warnings do not trigger automatic redesign or inhibit export. Every slide still requires paired and final ordered QA. Missing reviews, provider errors, unresolved material uncertainty, and confirmed defects continue to block. Old review findings are not automatically downgraded: the revised rubric requires a fresh review. Native code-box resizing preserves its requested left edge without treating each text line as an independently centered picture; code characters and typography stay protected.
 
 Examples:
 
@@ -189,7 +194,7 @@ Tests include rejecting removal of a logo/content-bearing picture, preserving lo
 
 ## Actionable decisions and repair acceptance (current)
 
-The generator records `slide_kind` (cover, content, section, closing) before composition. Source ordinal 1 is always the cover. An unchanged cover must already use the first-page layout; otherwise the generator transfers native title/subtitle/author into **1_Title Slide**. Validated semantic roles now drive cover extraction; a large logo or statistic cannot win a largest-font heuristic in the AI path. A cover with no identified native title stops for correction rather than pretending extraction succeeded.
+The generator records `slide_kind` (cover, content, section, closing) before composition. Source ordinal 1 is always the cover. An unchanged cover must already use the first-page layout; otherwise the generator transfers native title/subtitle/author into **Title Slide**. Validated semantic roles now drive cover extraction; a large logo or statistic cannot win a largest-font heuristic in the AI path. A cover with no identified native title stops for correction rather than pretending extraction succeeded.
 
 Every source element records retain/remove/extract_logo and a reason. Removal IDs must agree with those element decisions, and remain subject to the existing non-content/non-logo safety checks. Remove obsolete cover-background pictures rather than overlaying the old cover on the template. Required branding embedded in a raster background may use the bounded extraction procedure below. Unsupported or uncertain extraction keeps the original image and remains unresolved; it cannot become an unverified plain removal.
 
@@ -236,7 +241,7 @@ The per-slide image order is ORIGINAL, matching APPROVED TEMPLATE reference, the
 
 Text-based PDF uploads use the same redesign and paired QA workflow. Editable text is imported in page order; vector plots, images and other graphics are preserved as raster regions, not recreated with invented data. The original PDF page render remains QA's visual authority. Scanned pages require OCR first. Unsupported forms, annotations, attachments and link types must be explicitly resolved before import.
 
-On covers, the title/subtitle/author go into first-page template regions. A single meaningful source photograph replaces the inherited campus photo, retaining aspect ratio and source bytes within the support area. A white matte can frame that photo; the old full-slide background is not pasted into the template. Cover master footer furniture is hidden when the source photo replaces campus art. QA distinguishes a photo from an old-cover screenshot and rejects unwanted decorative panels, source-photo/campus-photo stacking and an old-cover inset.
+On openings, place title/subtitle/author in the mostly red first-page template regions. A meaningful source photograph may use the separate support region with exact bytes and aspect ratio; never add a campus/statue photo or an old cover/background inset. The statue photo belongs to the closing template. QA checks the visual artwork, not just a layout name.
 
 Timeout recovery permits one transport retry within the existing upload budget. Successful validated source decisions can be reused for an identical source, revision, provider configuration and policy; QA repair feedback bypasses that cache. If redesign does not complete, output QA is not run and verified release stays blocked. A timeout is an incomplete check, not a failed visual judgment.
 
@@ -245,9 +250,22 @@ Mandatory pass and spacing enforcement (policy 14 / rubric 9):
 
 - `needs_review` is not a QA pass. Human approval cannot resolve any mandatory AI QA finding. Remaining deterministic warnings may be acknowledged only after all mandatory AI QA checks pass; deterministic blocking defects cannot be waived.
 - Repair feedback includes per-slide AI findings, ordered-deck findings and deterministic structural blockers. Re-render the repaired candidate and review all slides again, paired with their originals and in order. Promote only an improved candidate without technical regression. Stalled repairs, provider failures or exhausted processing budget leave downloads inhibited.
-- The first output slide must use the native `1_Title Slide` layout and contain extracted title text in its title region. Check this independently before any preserved-slide exemption. A failed or incomplete preview is not an approved redesign.
+- The first output slide must use the native `Title Slide` layout and contain extracted title text in its title region. Check this independently before any preserved-slide exemption. A failed or incomplete preview is not an approved redesign.
 - Preserve small source text proportions during initial composition; do not apply a body-font floor to tightly positioned PDF lines. The planner must allocate box height and adjacent gaps together with font size. Reject newly introduced text-box collisions and worsening text-fit estimates before rendering. Existing collisions, contained text and math still require screenshot QA.
 - Math QA checks symbols against the original, clear superscript/subscript and fraction spacing, annotation association, and readability. Unused space is a defect only when a better use of it is needed for legibility; intentional whitespace is allowed.
 
 
-Cover correction (policy 15): keep all ordinary cover text, including bottom notes and metadata, in the right-hand text regions. The details region starts at x=7.75 to clear the sloping photo edge. Flow metadata using estimated wrapped-line heights and consistent spacing. A text-only source must not produce a blank source-page picture or contrast panel over the campus photo. All wording remains protected. PDF canvas dimensions use exact template EMUs; a maximum two-EMU rounding difference is allowed for unchanged native slides, while actual dimension mismatches return to the source decision stage before composition. This prevents the one-EMU PDF mismatch from aborting the pipeline before QA.
+Opening correction (policy 17): preserve all wording, including bottom notes and metadata, in the right-hand opening regions. Title: (4.648, 2.739, 7.962, 2.255); details: (5.114, 5.021, 7.496, 1.664), in inches. Opening artwork is mostly red with the faint tower and no campus photograph. Flow metadata using wrapped-line heights and consistent spacing. Closing artwork is the statue photo and red panel, with closing text in separate named regions. Both generator and QA receive this explicit visual-role contract; source/template caches are invalidated by the rubric version.
+
+PDF canvas dimensions use exact template EMUs; a maximum two-EMU rounding difference is allowed for unchanged native slides. Actual dimension mismatches return to the source decision stage before composition. Mandatory paired redesign QA attempts every slide even when one response is invalid; ordered output QA still checks every original/output pair and the full sequence. Any incomplete or failing review blocks release. Explicit configured budgets are respected; the default redesign token limit scales with slide count (120,000 per slide, minimum 500,000, maximum 2,000,000), with separate review reserves. Generation-from-idea QA remains a separate workflow and is not evidence of redesign QA success.
+
+
+## Real-file repair and PDF notation checks
+
+Review the native composition before requesting edits. Plan only slides with observed QA defects or blocking technical findings; advisory estimates alone must not repeatedly replan passing slides. Include paired bullets, labels and other related objects in a style repair. Permit neighboring text to move when a repaired box displaces it, while retaining unrelated styles. Validate the actual constrained proposal, then render and review again.
+
+Preserve PDF superscript/subscript baseline offsets and visible glyph sizes through import and rendering. Captions, citations and mathematical indices are assessed in their own roles at the supplied image resolution; relative size alone is not a defect. A final source reference/content page does not become a thank-you page solely because it is last. Source alignment is descriptive; destination regions govern placement after redesign.
+
+Unchanged source claims are supported as faithful transfers, not independently certified universal facts. Do not require outside research solely because an original teaching slide lacks citations. Newly introduced claims, demonstrated errors, contradictions and altered meanings remain reviewable.
+
+A passing paired review can be reused only for an identical original/candidate image pair and identical native inventory, template evidence, roles and rubric. New acceptance conditions invalidate reuse. Every changed slide gets a fresh review; independent native checks and the complete final ordered review still run. Reuse receipts record both the evidence hash and original reviewed candidate hash.

@@ -542,9 +542,9 @@ def _detect_diagram(deck: Deck, slide: Slide, title_shape):
 def _classify_kind(deck, slide, title_atoms, body_atoms, images):
     txt = " ".join(a.text for a in title_atoms + body_atoms).lower()
     if "thank" in txt and len(body_atoms) <= 2 and not images:
-        return "thankyou", "Thank You Slide"
+        return "thankyou", "1_Title Slide"
     if slide.index == 0:
-        return "title", "1_Title Slide"
+        return "title", "Title Slide"
     return "content", "Title Only"
 
 

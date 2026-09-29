@@ -50,13 +50,17 @@ def test_scanned_pdf_does_not_silently_become_a_thumbnail():
     assert r.status_code==400 and 'OCR' in r.text
 
 
-def test_failed_source_preparation_does_not_spend_calls_on_output_qa(ai_session,monkeypatch):
+def test_failed_source_preparation_still_runs_independent_qa(ai_session,monkeypatch):
     monkeypatch.setattr(providers,'generate',lambda *a,**kw:{'status':'timeout','message':'AI request timed out.'})
-    def forbidden(*a,**kw):raise AssertionError('Output QA must not run on a failed redesign')
-    monkeypatch.setattr(output_qa,'run',forbidden)
+    calls=[]
+    def review(*a,**kw):
+        calls.append(True)
+        return {n:{'status':'passed','findings':[]} for n in output_qa.CHECKS+('output_qa_visual',)}
+    monkeypatch.setattr(output_qa,'run',review)
     r=generations.build(ai_session,mode='ai')
     assert r['checks']['ai_redesign']['status']=='error'
-    assert all(r['checks'][n]['status']=='not_run' for n in output_qa.CHECKS)
+    assert calls and all(r['checks'][n]['status']=='passed' for n in output_qa.CHECKS)
+    assert not generations.download_allowed(r)
 
 
 def test_timeout_retries_once_with_bounded_timeout(openai_config,monkeypatch):
@@ -111,8 +115,8 @@ def test_cover_photo_is_not_an_old_slide_inset(tmp_path):
     report=grounded.build_deck(source,candidate,source_decisions={'0':choice})
     result=Presentation(candidate).slides[0]
     assert T.is_cover(result)
-    assert T.contract(result)['cover_photo_replaced']
-    assert not any(s.shape_id==7 for s in result.slide_layout.shapes)
+    assert result.slide_layout.name==T.OPENING_LAYOUT
+    assert len([s for s in result.slide_layout.shapes if s.shape_type==13])==1  # Red artwork, no campus photo.
     assert not any(s.name==T.BACKGROUND_NAME for s in result.shapes)
     retained=next(s for s in result.shapes if s.shape_type==13)
     assert retained.image.blob==pic.image.blob

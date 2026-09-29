@@ -53,9 +53,9 @@ test('outline approval is required and edits invalidate generation',async()=>{
   const job={id:'j1',request:{},outline,revision:1,content_revision:1,approved_hash:null,deck:null,status:'outline',error:null,pages:[],generation:null,progress:{stage:'outline'},expires_at:9999999999};
   vi.stubGlobal('fetch',vi.fn((url:string)=>response(url==='/api/auth/status'?auth:url.endsWith('/outline/approve')?{...job,approved_hash:'hash'}:job)));
   history.replaceState({},'','/?job=j1');render(<Studio/>);
-  expect(await screen.findByRole('button',{name:'Generate and verify'})).toBeDisabled();
-  fireEvent.click(screen.getByRole('button',{name:'Save and approve outline'}));
-  await waitFor(()=>expect(screen.getByRole('button',{name:'Generate and verify'})).toBeEnabled());
+  expect(await screen.findByRole('button',{name:'2. Generate and verify'})).toBeDisabled();
+  fireEvent.click(screen.getByRole('button',{name:'1. Save and approve outline'}));
+  await waitFor(()=>expect(screen.getByRole('button',{name:'2. Generate and verify'})).toBeEnabled());
   fireEvent.change(screen.getByLabelText('Slide 1 title'),{target:{value:'Updated opening'}});
-  expect(screen.getByRole('button',{name:'Generate and verify'})).toBeDisabled();
+  expect(screen.getByRole('button',{name:'2. Generate and verify'})).toBeDisabled();
 });

@@ -13,7 +13,11 @@ def audit(source_path, candidate_path, report):
     numbers = {str(s.part.partname): reverse.get(i, -1) for i,s in enumerate(prs.slides)}
     found, findings = {}, []
     covered_outputs = [o for outputs in mapping.values() for o in outputs]
-    if sorted(covered_outputs) != list(range(len(prs.slides))) or set(mapping) != {str(i) for i in range(source.slide_count)}:
+    from slide_engine import bookends
+    findings.extend(bookends.check(prs,report))
+    try: added=bookends.validate_added(prs,report)
+    except ValueError: added=set()
+    if sorted(covered_outputs+list(added)) != list(range(len(prs.slides))) or set(mapping) != {str(i) for i in range(source.slide_count)}:
         findings.append({'code': 'INVALID_SLIDE_MAPPING'})
     source_prs = Presentation(source_path)
     decisions=report.get('source_decisions',{})
@@ -36,6 +40,7 @@ def audit(source_path, candidate_path, report):
     source_numbers = {str(s.part.partname):i for i,s in enumerate(source_prs.slides)}
     repeats = set()
     for oi, slide in enumerate(prs.slides):
+        if oi in added: continue
         from slide_engine import template_policy as T
         si=reverse.get(oi)
         kept=decisions.get(str(si),{}).get('action')=='keep_original'

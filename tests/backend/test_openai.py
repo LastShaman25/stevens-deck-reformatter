@@ -142,7 +142,7 @@ def test_generation_through_actual_openai_adapter(ai_session,monkeypatch):
     assert r['checks']['ai_redesign']['status']=='passed',r['findings']
     assert r['checks']['ai_visual_review']['status']=='passed'
     assert all(c['provider']=='openai' and c['model']=='gpt-6-luna' for c in r['ai_pipeline']['calls'])
-    assert len(r['ai_pipeline']['calls'])==12
+    assert len(r['ai_pipeline']['calls'])==6
 
 
 ORIGINAL_GENERATE=providers.generate
