@@ -35,8 +35,23 @@ W, H = 640, 360  # 16:9 thumbnail
 def find_soffice(explicit=None):
     for cand in (explicit, shutil.which("soffice"), shutil.which("libreoffice"), _MAC_SOFFICE, r"C:\Program Files\LibreOffice\program\soffice.exe"):
         if cand and os.path.exists(cand):
-            return cand
+            return _soffice_cli(cand)
     return None
+
+
+def _soffice_cli(executable):
+    # Windows' GUI launcher is not the supported console/redirected-output entry point.
+    path = Path(executable)
+    console = path.with_suffix('.com')
+    if path.name.lower() == 'soffice.exe' and console.is_file():
+        return str(console)
+    return str(path)
+
+
+def _render_diagnostic(result):
+    parts = [getattr(result, name, b'') or b'' for name in ('stdout', 'stderr')]
+    text = ' '.join(p.decode('utf-8', errors='replace') if isinstance(p, bytes) else p for p in parts)
+    return ' '.join(text.split())[:1200] or 'No diagnostic output.'
 
 
 def _fitz():
@@ -66,7 +81,7 @@ def available():
 
 
 def pptx_to_pdf(pptx_path, out_dir, soffice=None):
-    info = {"name": "LibreOffice", "executable": soffice} if soffice else renderer_info()
+    info = {"name": "LibreOffice", "executable": _soffice_cli(soffice)} if soffice else renderer_info()
     if not info:
         raise RuntimeError("No supported renderer found. Install LibreOffice or PowerPoint.")
     os.makedirs(out_dir, exist_ok=True)
@@ -76,9 +91,10 @@ def pptx_to_pdf(pptx_path, out_dir, soffice=None):
     flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
     with _RENDER_LOCK, tempfile.TemporaryDirectory(prefix='stevens-render-', dir=out_dir) as profile:
         if info['name'] == 'LibreOffice':
-            command = [info['executable'], '--headless',
-                       '-env:UserInstallation=' + Path(profile).as_uri(),
-                       '--convert-to', 'pdf', '--outdir', str(Path(out_dir).resolve()), str(Path(pptx_path).resolve())]
+            lo_command = [info['executable'], '--headless', '--nologo', '--norestore',
+                          '-env:UserInstallation=' + Path(profile).resolve().as_uri()]
+            command = lo_command + ['--convert-to', 'pdf:impress_pdf_Export',
+                                    '--outdir', str(Path(out_dir).resolve()), str(Path(pptx_path).resolve())]
         else:
             script = Path(__file__).with_name('powerpoint_render.ps1').read_text(encoding='utf-8')
             command = ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
@@ -108,14 +124,22 @@ def pptx_to_pdf(pptx_path, out_dir, soffice=None):
                     pass
             raise RuntimeError(f"{info['name']} exceeded the {RENDER_TIMEOUT}s render timeout; verification did not complete.") from exc
         except subprocess.CalledProcessError as exc:
-            raise RuntimeError(f"{info['name']} could not render this file (exit {exc.returncode}); verification did not complete.") from exc
+            raise RuntimeError(f"{info['name']} could not render this file (exit {exc.returncode}); verification did not complete. "
+                               + _render_diagnostic(exc)) from exc
         if not pdf.exists() or not pdf.stat().st_size:
-            raise RuntimeError('Renderer did not create a PDF')
+            raise RuntimeError('Renderer did not create a PDF. ' + _render_diagnostic(result))
         if info['name'] == 'Microsoft PowerPoint':
             metadata = json.loads(result.stdout.decode('utf-8-sig').strip())
         else:
-            version = subprocess.run([info['executable'], '--version'], capture_output=True,
-                                     timeout=15, check=True, creationflags=flags).stdout.decode().strip()
+            # Reuse this completed job's private profile, never initialize the interactive default profile.
+            try:
+                version_result = subprocess.run(lo_command + ['--version'], capture_output=True,
+                                                timeout=30, check=True, creationflags=flags, env=environment)
+                version = version_result.stdout.decode('utf-8', errors='replace').strip()
+            except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
+                raise RuntimeError('LibreOffice version check did not complete; verification did not complete.') from exc
+            if not version:
+                raise RuntimeError('LibreOffice version check returned no version; verification did not complete.')
             metadata = {'renderer': info['name'], 'version': version}
         pdf.with_suffix('.renderer.json').write_text(json.dumps(metadata), encoding='utf-8')
     return str(pdf)

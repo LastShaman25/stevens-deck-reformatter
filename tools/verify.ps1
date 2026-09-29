@@ -11,8 +11,6 @@ $env:STEVENS_LEARN = '0'
 $env:STEVENS_AUTH_DB = Join-Path $evidence 'accounts.sqlite3'
 $env:STEVENS_WORKSPACE_ROOT = Join-Path $evidence 'workspaces'
 function Check-Exit([string]$step) { if ($LASTEXITCODE -ne 0) { throw "$step failed ($LASTEXITCODE). Evidence: $evidence" } }
-& $python -m pytest -q --basetemp="$evidence/pytest" --junitxml="$evidence/backend.xml"
-Check-Exit 'Backend and real renderer tests'
 Push-Location frontend
 try {
     node node_modules/vitest/vitest.mjs run --reporter=dot
@@ -22,6 +20,9 @@ try {
     node node_modules/vite/bin/vite.js build
     Check-Exit 'Production build'
 } finally { Pop-Location }
+# HTTP tests require a fresh production frontend, just like CI.
+& $python -m pytest -q --basetemp="$evidence/pytest" --junitxml="$evidence/backend.xml"
+Check-Exit 'Backend and real renderer tests'
 if (-not $SkipBrowser) {
     & $python tools/create_test_fixture.py
     Check-Exit 'Synthetic browser fixture'

@@ -97,16 +97,18 @@ Limits: one PDF per job, 50 MB, 100 pages, 220,000 extracted characters, bounded
 
 ```powershell
 New-Item -ItemType Directory .local/verification -Force | Out-Null
-.venv/Scripts/python.exe -m pytest -q --basetemp=.local/verification/pytest-local
 Push-Location frontend
 npx vitest run
 Pop-Location
 npm --prefix frontend run build
+.venv/Scripts/python.exe -m pytest -q --basetemp=.local/verification/pytest-local
 .venv/Scripts/python.exe tools/create_test_fixture.py
 npm --prefix frontend run test:e2e
 ```
 
 Browser tests require the running application with `STEVENS_OFFLINE=1`, invitation-code sign-in, and locally installed Chrome. Use `tools/start_verification_server.ps1` for an isolated synthetic server on port 8001 and set `STEVENS_TEST_URL=http://127.0.0.1:8001` when running Playwright. CI installs Chromium and LibreOffice. Use a fresh pytest temporary directory on subsequent runs in restricted environments. Private corpus inputs default to `.local/private`; use `--corpus-root PATH` for another location. The private corpus command is `python tools/run_acceptance.py --output .local/verification/new-run --render`; its output directory must be new. No private decks are uploaded by CI.
+
+Build the frontend before backend HTTP tests: a clean checkout does not contain `frontend/dist`. Windows LibreOffice rendering uses its `soffice.com` console launcher when available, with an isolated headless profile for conversion and version detection. The complete CI suite includes real render tests; a non-renderer-only local test pass is not equivalent to a passing CI run.
 
 After configuring keys, run the live checkpoint with a **new** output directory:
 

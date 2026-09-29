@@ -21,10 +21,6 @@ jobs:
         run: choco install libreoffice-fresh --no-progress -y
       - name: Install Python dependencies
         run: python -m pip install -r backend/requirements-lock.txt
-      - name: Backend and required render tests
-        run: |
-          New-Item -ItemType Directory .local/verification -Force | Out-Null
-          python -m pytest -q --basetemp=.local/verification/pytest-ci --junitxml=.local/verification/backend-tests.xml
       - name: Frontend tests and build
         working-directory: frontend
         run: |
@@ -34,6 +30,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Frontend tests failed' }
           npm run build
           if ($LASTEXITCODE -ne 0) { throw 'Frontend build failed' }
+      # Backend HTTP checks serve this build; a clean checkout has no frontend/dist.
+      - name: Backend and required render tests
+        run: |
+          New-Item -ItemType Directory .local/verification -Force | Out-Null
+          python -m pytest -q --basetemp=.local/verification/pytest-ci --junitxml=.local/verification/backend-tests.xml
+          if ($LASTEXITCODE -ne 0) { throw 'Backend or required render tests failed' }
       - name: Generate synthetic browser fixture
         run: python tools/create_test_fixture.py
       - name: Install test browser
