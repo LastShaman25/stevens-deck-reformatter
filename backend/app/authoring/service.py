@@ -288,7 +288,8 @@ or invites questions. Keep content suitable for the specified audience.''',
             for slide in deck.slides]
     c['deck'] = deck.model_dump()
     c['status'] = 'generating'; persist(sess)
-    gid = uuid.uuid4().hex
+    from ..cloud.replay import identifier
+    gid = identifier()
     directory = Path(sess.dir, 'generations', gid); directory.mkdir(parents=True)
     candidate = directory/'candidate.pptx'
     record = {'schema_version':2, 'generation_id':gid, 'directory':str(directory), 'candidate':str(candidate),

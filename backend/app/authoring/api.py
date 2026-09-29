@@ -57,6 +57,10 @@ def source_preview(sid: str, page: int):
     with sessions.read_job(sess):
         item = next((p for p in sess.creation['pages'] if p['page'] == page), None)
         if not item: raise HTTPException(404, 'Source page not found.')
+        from .. import cloud
+        if cloud.enabled():
+            from ..cloud.objects import preview_response
+            return preview_response(sess,item['image'])
         return Response(Path(item['image']).read_bytes(), media_type='image/png')
 
 
@@ -124,6 +128,10 @@ def preview(sid: str, index: int, generation_id: str):
             if not 0 <= index < record['report']['slide_count']: raise HTTPException(404, 'Slide not found.')
             path = Path(record['directory'], 'render', f'slide-{index}.png')
             if not path.is_file(): raise HTTPException(404, 'Rendered preview unavailable.')
+            from .. import cloud
+            if cloud.enabled():
+                from ..cloud.objects import preview_response
+                return preview_response(sess,path)
             return Response(path.read_bytes(), media_type='image/png')
     except ValueError as exc: raise HTTPException(409, str(exc))
 
@@ -151,5 +159,10 @@ def finish(sid: str):
 
 @router.get('/{sid}/lifecycle')
 def lifecycle(sid: str):
-    sess = sessions._sessions.get(sid)
+    from .. import cloud
+    if cloud.enabled():
+        from ..cloud import state
+        sess = state.get(sid, include_closed=True)
+    else:
+        sess = sessions._sessions.get(sid)
     return {'status':sess.lifecycle if sess else 'purged'}

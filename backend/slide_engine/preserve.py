@@ -3,6 +3,8 @@
 Every source object is planned explicitly. Native relationships and geometry are
 retained instead of translating a chart, table or diagram into incomplete atoms.
 """
+
+from slide_engine.package import save_deck
 from copy import deepcopy
 from pathlib import Path
 import math
@@ -380,7 +382,7 @@ def build(src_path, out_path, template_path, revisions=None, source_decisions=No
                 body = deepcopy(src_tf._txBody)
                 copy_relationships(body, src_slide.notes_slide.part, dst_slide.notes_slide.part)
                 dst_tf._txBody.getparent().replace(dst_tf._txBody, body)
-    dest.save(out_path)
+    save_deck(dest,out_path)
     return {'source': str(src_path), 'output': str(out_path), 'slide_count': len(slides),
             'coverage': {'ok': True, 'source': len(inv.items), 'placed': len({p['source_id'] for p in flat}),
                          'excluded': [{'id':x.id, 'reason':x.policy_reason} for x in inv.items if x.disposition == 'excluded_by_policy']},

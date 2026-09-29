@@ -1,10 +1,10 @@
 import {useEffect, useState} from 'react';
 import App from './App';
 import {Creation} from './authoring/Creation';
-import {jsonRequest, setCSRF} from './http';
+import {jsonRequest, setCSRF, setSharedBackend} from './http';
 
 type User = {id:string; email:string; role:'member'|'admin'; active:number};
-type Auth = {user:User|null; csrf:string|null; mode:string; configured:boolean};
+type Auth = {user:User|null; csrf:string|null; mode:string; configured:boolean;cloud?:boolean};
 
 function Administration() {
   const [users,setUsers] = useState<User[]>([]), [name,setName] = useState(''), [role,setRole] = useState('member');
@@ -31,13 +31,13 @@ export default function Studio(){
   const [auth,setAuth] = useState<Auth|null>(null), [code,setCode]=useState(''), [error,setError]=useState('');
   const [screen,setScreen]=useState<'home'|'ppt'|'create'|'admin'>(new URLSearchParams(location.search).has('session')?'ppt':new URLSearchParams(location.search).has('job')?'create':'home');
   const [busy,setBusy]=useState(false);
-  function accept(value:Auth){setAuth(value);setCSRF(value.csrf||'');}
+  function accept(value:Auth){setAuth(value);setCSRF(value.csrf||'');if(value.cloud!==undefined)setSharedBackend(value.cloud);}
   useEffect(()=>{jsonRequest<Auth>('/api/auth/status').then(accept).catch(e=>setError(e.message));},[]);
   useEffect(()=>{const expired=()=>{setCSRF('');setAuth(previous=>previous?{...previous,user:null,csrf:null}:previous);setError('Your sign-in expired or was revoked. Sign in again.');};window.addEventListener('studio-signout',expired);return()=>window.removeEventListener('studio-signout',expired);},[]);
   async function login(e:React.FormEvent){e.preventDefault();setBusy(true);setError('');try{accept(await jsonRequest<Auth>('/api/auth/code',{code}));setCode('');}catch(e){setError((e as Error).message);}finally{setBusy(false);}}
   async function logout(){setBusy(true);try{await jsonRequest('/api/auth/logout',{});accept({...auth!,user:null,csrf:null});setScreen('home');history.replaceState({},'',location.pathname);}catch(e){setError((e as Error).message);}finally{setBusy(false);}}
   const home=()=>{setScreen('home');history.replaceState({},'',location.pathname);};
-  if(!auth)return <main className="p-10" role="status">{error||'Loading sign-in…'}</main>;
+  if(!auth)return <main className="p-10" role="status"><p>{error||'Loading sign-in…'}</p>{error&&<button className="btn-ghost mt-4" onClick={()=>{setError('');jsonRequest<Auth>('/api/auth/status').then(accept).catch(e=>setError(e.message));}}>Try again</button>}</main>;
   if(!auth.user)return <main className="mx-auto mt-20 max-w-md card p-8"><h1 className="text-2xl font-bold">Stevens Slide Studio</h1><p className="mt-2">Sign in to create or redesign a presentation.</p>
     {error&&<p role="alert" className="mt-4 text-red-700">{error}</p>}
     {auth.mode==='invitation'?<form className="mt-6 space-y-4" onSubmit={login}><label className="block">Invitation code<input type="password" autoComplete="off" className="mt-2 w-full rounded border p-3" value={code} onChange={e=>setCode(e.target.value)} required/></label><button className="btn-red w-full" disabled={busy}>Sign in</button></form>:<a className="btn-red mt-5 inline-block" href="/auth/login">Continue with Google</a>}

@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from threading import Lock
+from . import cloud
 
 TTL_SECONDS = 3600
 ABSOLUTE_SECONDS = 4 * 3600
@@ -55,6 +56,9 @@ class Session:
                 'touched': self.touched, 'lifecycle': self.lifecycle, 'pid':os.getpid()}), encoding='utf-8')
 
     def ensure_active(self):
+        if cloud.enabled():
+            from .cloud.state import active
+            active(self)
         if self.lifecycle != 'active' or time.time() >= self.expires or (self.execution_deadline and time.time() >= self.execution_deadline):
             raise ValueError('Job closed or expired.')
 
@@ -107,6 +111,9 @@ def _sweep_locked():
 
 
 def create():
+    if cloud.enabled():
+        from .cloud.state import create as shared_create
+        return shared_create()
     from .auth import current_user
     with _lock:
         _sweep_locked()
@@ -122,6 +129,9 @@ def create():
 
 
 def get(sid):
+    if cloud.enabled():
+        from .cloud.state import get as shared_get
+        return shared_get(sid)
     with _lock:
         _sweep_locked()
         sess = _sessions.get(sid)
@@ -129,6 +139,9 @@ def get(sid):
 
 
 def delete(sid):
+    if cloud.enabled():
+        from .cloud.state import delete as shared_delete
+        return shared_delete(sid)
     with _lock:
         sess = _sessions.get(sid)
         if not sess:
@@ -139,18 +152,28 @@ def delete(sid):
 
 
 def cancel_owner(uid, login_id=None):
+    if cloud.enabled():
+        from .cloud.state import cancel_owner as shared_cancel
+        return shared_cancel(uid,login_id)
     for sess in list(_sessions.values()):
         if sess.owner_user_id == uid and (login_id is None or sess.login_id == login_id):
             delete(sess.id)
 
 
 def sweep():
+    if cloud.enabled():
+        from .cloud.state import sweep as shared_sweep
+        return shared_sweep()
     with _lock:
         _sweep_locked()
 
 
 @contextmanager
 def job(sess):
+    if cloud.enabled():
+        from .cloud.state import job as shared_job
+        with shared_job(sess):yield sess
+        return
     with _lock:
         sess.ensure_active()
         if sess.id not in _sessions or not sess.job_lock.acquire(blocking=False):
@@ -178,6 +201,11 @@ def job(sess):
 
 @contextmanager
 def read_job(sess):
+    if cloud.enabled():
+        from .cloud.state import active,materialize
+        active(sess);materialize(sess)
+        yield sess
+        return
     with _lock:
         sess.ensure_active()
         if sess.id not in _sessions:
@@ -193,6 +221,7 @@ def read_job(sess):
 
 
 def cleanup_orphans(startup=False):
+    if cloud.enabled():return
     with _lock:
         active = {s.dir for s in _sessions.values()}
         root = Path(_ROOT).resolve()

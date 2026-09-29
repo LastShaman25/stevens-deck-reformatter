@@ -1,0 +1,25 @@
+FROM python:3.12-slim-trixie
+
+# LibreOffice is a real renderer, not a mocked preview or schematic exporter.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libreoffice-impress libreoffice-math fontconfig fonts-liberation \
+    fonts-crosextra-carlito fonts-crosextra-caladea fonts-noto-core \
+    fonts-noto-cjk fonts-texgyre \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY requirements-lock.txt requirements-cloud.txt ./
+RUN pip install --no-cache-dir -r requirements-lock.txt -r requirements-cloud.txt
+COPY app ./app
+COPY slide_engine ./slide_engine
+COPY assets ./assets
+COPY fontconfig.xml /etc/fonts/conf.d/99-stevens.conf
+RUN fc-cache -f && libreoffice --headless --version
+RUN useradd --uid 10001 --create-home studio
+USER studio
+ENV PORT=8000 PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
+    STEVENS_STORAGE_MODE=shared STEVENS_SOFFICE=/usr/bin/libreoffice \
+    STEVENS_AI_PROVIDER=vercel STEVENS_AI_MAX_CALLS=0 STEVENS_AI_MAX_TOKENS=0 STEVENS_LEARN=0 \
+    STEVENS_WORKSPACE_ROOT=/tmp/stevens-slide-studio STEVENS_RENDER_TIMEOUT=90 \
+    STEVENS_AI_REQUEST_TIMEOUT=60 MPLCONFIGDIR=/tmp/matplotlib
+EXPOSE 8000
+CMD ["sh", "-c", "exec python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --no-access-log"]

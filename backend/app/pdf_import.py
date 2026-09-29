@@ -3,6 +3,8 @@
 The original PDF remains the paired visual authority. Never call a page screenshot
 an editable redesign. Scans need OCR and are rejected explicitly rather than lost.
 """
+
+from slide_engine.package import save_deck
 from io import BytesIO
 from pathlib import Path
 import hashlib
@@ -148,7 +150,7 @@ def convert(pdf_path, pptx_path, preview_path):
                     target=int(shape.name.split(':')[1])
                     if not 0<=target<len(prs.slides): raise ValueError('PDF internal link target is missing.')
                     shape.click_action.target_slide=prs.slides[target]
-        prs.save(pptx_path)
+        save_deck(prs,pptx_path)
         reopened=Presentation(pptx_path)
         for page,slide in zip(evidence,reopened.slides):
             text=''.join(s.text for s in slide.shapes if s.has_text_frame)

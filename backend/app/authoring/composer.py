@@ -1,4 +1,6 @@
 """Native PPTX composition plus independent reopened-artifact verification."""
+
+from slide_engine.package import save_deck
 import hashlib
 import json
 from pathlib import Path
@@ -125,7 +127,7 @@ def compose(spec, path, assets, pages=(), kinds=None):
                          'notes': notes, 'chart': content.chart.model_dump() if content.chart else None,
                          'image_sha256': image_hash, 'table':content.table.model_dump() if content.table else None,
                          'diagram':content.diagram.model_dump() if content.diagram else None, 'diagram_shapes':diagram_shapes})
-    prs.save(path)
+    save_deck(prs,path)
     return manifest
 
 

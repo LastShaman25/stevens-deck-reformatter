@@ -1,4 +1,6 @@
 """Source-first decisions, before template composition can alter the source."""
+
+from slide_engine.package import save_deck
 from pathlib import Path
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
@@ -360,4 +362,4 @@ def replace_slides(current,replacement,indices,out):
         register_master(target,part.slide)
         sid=target.slides._sldIdLst[i];old=sid.rId
         sid.set(qn('r:id'),target.part.relate_to(part,RT.SLIDE));target.part.drop_rel(old)
-    target.save(out)
+    save_deck(target,out)
