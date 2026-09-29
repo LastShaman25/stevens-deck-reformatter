@@ -1,4 +1,6 @@
 """Bounded local text reflow. Never changes diagram/chart proportions or text."""
+
+from slide_engine.package import save_deck
 from pathlib import Path
 from copy import deepcopy
 from pptx import Presentation
@@ -64,7 +66,7 @@ def repair(source, candidate, report, max_cycles=3):
             reflow(slide.shapes,si,int(Inches(T.CONTENT[1]+T.CONTENT[3])))
         if not changes:break
         proposed=Path(candidate).with_name(f'repair-{cycle}.pptx')
-        prs.save(proposed)
+        save_deck(prs,proposed)
         updated=deepcopy(report)
         for change in changes:
             for p in updated['placements']:

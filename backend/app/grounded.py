@@ -12,6 +12,8 @@ are the only text not from the source, and they are flagged for confirmation.
 """
 from __future__ import annotations
 
+from slide_engine.package import save_deck
+
 import os
 import sys
 
@@ -302,7 +304,7 @@ def build_one(src_path, index, out_pptx, template_path=TEMPLATE_PATH,
     slide = _build_plan_slide(prs, deck, plan, sw, sh, orig_pdf)
     iters = 6 if hints["reflow"] else 3
     applied, remaining = _fix_slide(slide, plan, sw_emu, sh_emu, iters)
-    prs.save(out_pptx)
+    save_deck(prs,out_pptx)
 
     # Is this slide's main figure a PRESERVED image (exact crop)? If so, tags
     # can't repaint what's baked into that image -- surface that clearly.
@@ -526,7 +528,7 @@ def _legacy_build_deck(src_path, out_path, template_path=TEMPLATE_PATH,
                 "auto_fixes": applied,
                 "geometry_clean": not remaining,
             })
-        prs.save(out_path)
+        save_deck(prs,out_path)
         return fixlog, slide_reports
 
     fixlog, slide_reports = _assemble()

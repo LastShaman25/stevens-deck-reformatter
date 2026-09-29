@@ -86,6 +86,11 @@ def available():
 
 
 def pptx_to_pdf(pptx_path, out_dir, soffice=None):
+    from .cloud import replay
+    return replay.render(pptx_path,out_dir,soffice,lambda: _pptx_to_pdf(pptx_path,out_dir,soffice))
+
+
+def _pptx_to_pdf(pptx_path, out_dir, soffice=None):
     info = {"name": "LibreOffice", "executable": _soffice_cli(soffice)} if soffice else renderer_info()
     if not info:
         raise RuntimeError("No supported renderer found. Install LibreOffice or PowerPoint.")

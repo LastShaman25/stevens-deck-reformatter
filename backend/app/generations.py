@@ -173,7 +173,8 @@ def resolve_visual_advisories(record):
 
 
 def build(sess, mode='preserve', repair_passes=1):
-    gid = uuid.uuid4().hex
+    from .cloud.replay import identifier
+    gid = identifier()
     directory = Path(sess.dir, 'generations', gid)
     directory.mkdir(parents=True)
     candidate = directory / 'candidate.pptx'

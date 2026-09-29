@@ -1,4 +1,6 @@
 """AI-editable geometry. Source text, relationships, data and emphasis are immutable."""
+
+from slide_engine.package import save_deck
 from copy import deepcopy
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
@@ -339,6 +341,6 @@ def apply(candidate,out,plans,report):
                     if p['source_id']==sid[4:] and p['output_slide']==index:
                         p['bounds']=[shape.left,shape.top,shape.width,shape.height]
         updated['slides'][index]['layout']=plan.layout
-    prs.save(out)
+    save_deck(prs,out)
     updated['llm_used']=True
     return updated,changes

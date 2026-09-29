@@ -62,6 +62,10 @@ async def create_session(file: UploadFile = File(...)):
 
 def analyze_upload(filename, data):
     sess = sessions.create()
+    return analyze_into(sess, filename, data)
+
+
+def analyze_into(sess, filename, data):
     try:
         with sessions.job(sess):
             sess.original_name = os.path.basename(filename)
@@ -125,6 +129,10 @@ def preview(sid: str, index: int, variant: Literal['before','after']='after', ge
                         raise HTTPException(409, 'Rendered artifact changed.')
             if not path.exists():
                 raise HTTPException(404, 'Rendered preview unavailable.')
+            from . import cloud
+            if cloud.enabled():
+                from .cloud.objects import preview_response
+                return preview_response(sess,path)
             return Response(path.read_bytes(), media_type='image/png', headers={'Cache-Control':'no-store'})
     except ValueError as exc:
         raise HTTPException(409, str(exc))

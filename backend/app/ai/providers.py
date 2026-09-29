@@ -79,6 +79,12 @@ def strict_schema(value):
 
 
 def generate(role, system, payload, images=(), max_tokens=16000):
+    from ..cloud import replay
+    return replay.generate(role,system,payload,images,max_tokens,
+        lambda: _generate_attempts(role,system,payload,images,max_tokens))
+
+
+def _generate_attempts(role, system, payload, images=(), max_tokens=16000):
     """One bounded retry for transport or malformed responses; every attempt consumes budget."""
     attempts=[]
     for _ in range(2):

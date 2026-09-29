@@ -1,4 +1,6 @@
 """Explicitly authorized closing page, separate from source-slide provenance."""
+
+from slide_engine.package import save_deck
 import re
 from pptx import Presentation
 from pptx.util import Inches, Pt
@@ -37,7 +39,7 @@ def ensure(candidate, report):
     report['slide_count']=len(prs.slides)
     report['slides'].append({'index':index,'source_index':None,'kind':'closing','layout':T.CLOSING_LAYOUT,
                              'template_contract':T.contract(slide),'hard_issues':0})
-    prs.save(candidate)
+    save_deck(prs,candidate)
     return report
 
 

@@ -12,6 +12,8 @@ Locked rules enforced here:
 """
 from __future__ import annotations
 
+from slide_engine.package import save_deck
+
 import io
 import os
 import sys
@@ -410,5 +412,5 @@ def build(src_path, out_path, revisions=None, template_path=TEMPLATE_PATH):
                 "geometry_issues": issues,
             })
 
-    tpl.save(out_path)
+    save_deck(tpl,out_path)
     return report

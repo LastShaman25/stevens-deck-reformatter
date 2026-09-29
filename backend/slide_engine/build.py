@@ -11,6 +11,8 @@ All text comes verbatim from atoms by id -- the builder never authors words.
 """
 from __future__ import annotations
 
+from slide_engine.package import save_deck
+
 import io
 import math
 import os
@@ -930,5 +932,5 @@ def build_demo(deck, plans, indices, out_path, orig_pdf):
         # deterministic auto-fix loop: correct + re-verify each built slide
         applied, remaining = autofix.autofix_slide(slide, sw_emu, sh_emu)
         fixlog.append({"index": idx, "applied": applied, "remaining": remaining})
-    prs.save(out_path)
+    save_deck(prs,out_path)
     return {"out_path": out_path, "fixlog": fixlog}

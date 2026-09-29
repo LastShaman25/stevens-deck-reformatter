@@ -1,0 +1,41 @@
+name: Shared deployment verification
+on:
+  push:
+    branches: [codex/vercel-full-stack]
+  pull_request:
+    branches: [reviewed]
+permissions:
+  contents: read
+concurrency:
+  group: shared-deployment-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+jobs:
+  shared-container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: studio
+          POSTGRES_PASSWORD: synthetic-ci-only
+          POSTGRES_DB: studio
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U studio"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the deployed LibreOffice and fonts image
+        run: docker build -f backend/Dockerfile.vercel -t stevens-deployment-test backend
+      - name: Install test-only S3 emulator in a derived image
+        run: |
+          printf 'FROM stevens-deployment-test\nUSER root\nRUN pip install --no-cache-dir "moto[server]==5.1.12"\nUSER studio\n' | docker build -t stevens-deployment-tests -
+      - name: Run shared authentication, storage, replay, rendering and release-gate checks
+        run: |
+          docker run --rm --network host \
+            -e STEVENS_STORAGE_MODE=local -e STEVENS_OFFLINE=1 -e STEVENS_LEARN=0 \
+            -e STEVENS_TEST_DATABASE_URL=postgresql://studio:synthetic-ci-only@127.0.0.1:5432/studio \
+            -e PYTHONPATH=/app \
+            -v "$PWD/tests:/tests:ro" -v "$PWD/tools:/tools:ro" \
+            stevens-deployment-tests python -m pytest /tests/backend/test_shared_deployment.py -q --basetemp=/tmp/shared-tests -o cache_dir=/tmp/pytest-cache

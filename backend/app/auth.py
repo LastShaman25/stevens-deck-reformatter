@@ -17,6 +17,7 @@ from fastapi.responses import RedirectResponse, JSONResponse
 from pydantic import BaseModel, Field
 from typing import Literal
 from .ai.providers import setting
+from . import cloud
 
 current_user = ContextVar('current_user', default=None)
 router = APIRouter()
@@ -29,8 +30,15 @@ def digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def public_url():
+    # Vercel's environment is trusted configuration; request Host is not.
+    deployment=os.environ.get('VERCEL_URL','')
+    fallback='https://'+deployment if os.environ.get('VERCEL') and deployment else 'http://localhost:8000'
+    return setting('STEVENS_PUBLIC_URL',fallback).rstrip('/')
+
+
 def trusted_origin(origin):
-    configured = setting('STEVENS_PUBLIC_URL', 'http://localhost:8000').rstrip('/')
+    configured = public_url()
     if not origin or origin == configured: return True
     # Development-only aliases; never reflect arbitrary Host/Origin values.
     return configured in ('http://localhost:8000','http://127.0.0.1:8000') and origin in (
@@ -39,6 +47,10 @@ def trusted_origin(origin):
 
 @contextmanager
 def database():
+    if cloud.enabled():
+        from .cloud.db import accounts
+        with accounts() as con:yield con
+        return
     base = Path(os.environ.get('LOCALAPPDATA', Path.home() / '.local/share')) / 'StevensSlideStudio'
     path = Path(setting('STEVENS_AUTH_DB', str(base / 'accounts.sqlite3')))
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -132,7 +144,7 @@ def provision_identity(claims, invitation=''):
 
 def oidc_client():
     issuer = setting('STEVENS_OIDC_ISSUER').rstrip('/')
-    origin = setting('STEVENS_PUBLIC_URL', 'http://localhost:8000').rstrip('/')
+    origin = public_url()
     if not issuer.startswith('https://') or not setting('STEVENS_OIDC_CLIENT_ID'):
         raise HTTPException(503, 'Configure OIDC issuer, client ID, client secret, and initial admin email in backend/.env.')
     oauth = OAuth()
@@ -147,7 +159,7 @@ def oidc_client():
 def auth_status(request: Request):
     bootstrap_codes()
     user = authenticate(request)
-    return {'user': public_user(user) if user else None, 'csrf': user['csrf'] if user else None,
+    return {'cloud':cloud.enabled(), 'user': public_user(user) if user else None, 'csrf': user['csrf'] if user else None,
             'mode': setting('STEVENS_AUTH_MODE', 'invitation'),
             'configured': setting('STEVENS_AUTH_MODE', 'invitation') == 'invitation' or bool(setting('STEVENS_OIDC_ISSUER') and setting('STEVENS_OIDC_CLIENT_ID'))}
 
@@ -177,6 +189,9 @@ def code_login(request: Request, body: CodeLogin):
         raise HTTPException(403, 'Untrusted request origin.')
     peer = request.client.host if request.client else 'unknown'
     now = time.time()
+    if cloud.enabled():
+        from .cloud.db import login_attempt
+        login_attempt(peer,now)
     with _attempt_lock:
         for key in list(_attempts):
             _attempts[key] = [t for t in _attempts[key] if t > now-60]
@@ -196,7 +211,7 @@ def code_login(request: Request, body: CodeLogin):
     token, csrf = issue_login(user['id'])
     response = JSONResponse({'user': user, 'csrf': csrf, 'mode': 'invitation', 'configured': True})
     response.set_cookie(COOKIE, token, httponly=True,
-                        secure=setting('STEVENS_PUBLIC_URL', 'http://localhost:8000').startswith('https://'),
+                        secure=public_url().startswith('https://'),
                         samesite='lax', max_age=8*3600)
     return response
 
@@ -235,7 +250,7 @@ def rotate_code(uid: str, request: Request):
         token, csrf = issue_login(uid)
         response = JSONResponse({'code':code, 'csrf':csrf})
         response.set_cookie(COOKIE, token, httponly=True,
-            secure=setting('STEVENS_PUBLIC_URL','http://localhost:8000').startswith('https://'),
+            secure=public_url().startswith('https://'),
             samesite='lax', max_age=8*3600)
         return response
     return {'code': code}
@@ -309,7 +324,7 @@ def invite_user(request: Request, body: Invite):
     with database() as con:
         con.execute('DELETE FROM invites WHERE expires<? OR email=?', (time.time(), body.email.lower()))
         con.execute('INSERT INTO invites VALUES (?,?,?,?)', (digest(token), body.email.lower(), body.role, time.time()+48*3600))
-    return {'url': setting('STEVENS_PUBLIC_URL', 'http://localhost:8000').rstrip('/')+'/auth/login?invite='+token,
+    return {'url': public_url()+'/auth/login?invite='+token,
             'expires_in_hours': 48}
 
 
@@ -345,7 +360,11 @@ def remove_user(uid: str, request: Request):
         con.execute('UPDATE users SET active=0 WHERE id=?',(uid,))
         con.execute('DELETE FROM logins WHERE user_id=?',(uid,))
     sessions.cancel_owner(uid)
-    if any(s.owner_user_id==uid for s in sessions._sessions.values()):
+    pending=any(s.owner_user_id==uid for s in sessions._sessions.values())
+    if cloud.enabled():
+        from .cloud.db import connect
+        with connect() as con:pending=bool(con.execute('SELECT 1 FROM processing_sessions WHERE owner_id=%s',(uid,)).fetchone())
+    if pending:
         raise HTTPException(409,'Account disabled. Wait for processing-file deletion, then retry account removal.')
     with database() as con:
         con.execute('DELETE FROM invites WHERE email=?',(row['email'],))
@@ -357,15 +376,29 @@ def remove_user(uid: str, request: Request):
 def processing_status(request: Request):
     admin(request)
     from . import sessions
+    if cloud.enabled():
+        from .cloud.db import connect
+        with connect() as con:
+            rows=con.execute('SELECT lifecycle,count(*) AS n FROM processing_sessions GROUP BY lifecycle').fetchall()
+        counts={r['lifecycle']:r['n'] for r in rows}
+        return {'active_jobs':counts.get('active',0),'deletion_pending':counts.get('closing',0),
+                'deletion_failed':counts.get('purge_failed',0)}
     return {'active_jobs':sum(s.lifecycle=='active' for s in sessions._sessions.values()),
             'deletion_pending':sum(s.lifecycle in ('closing','purging') for s in sessions._sessions.values()),
             'deletion_failed':sum(s.lifecycle=='purge_failed' for s in sessions._sessions.values())}
 
 
 async def guard(request: Request, call_next):
+    if cloud.enabled():
+        from .cloud.state import scope
+        with scope():return await _guard(request,call_next)
+    return await _guard(request,call_next)
+
+
+async def _guard(request: Request, call_next):
     from . import sessions
     path = request.url.path
-    if not path.startswith('/api/') or path in ('/api/auth/status', '/api/auth/code', '/api/health'):
+    if not path.startswith('/api/') or path in ('/api/auth/status', '/api/auth/code', '/api/health','/api/cloud/tick'):
         response = await call_next(request)
         response.headers['Cache-Control'] = 'no-store'
         return response
@@ -376,7 +409,7 @@ async def guard(request: Request, call_next):
         if not secrets.compare_digest(request.headers.get('X-CSRF-Token', ''), user['csrf']):
             return JSONResponse({'detail': 'Invalid request token. Reload the page.'}, status_code=403)
         origin = request.headers.get('origin')
-        allowed = setting('STEVENS_PUBLIC_URL', 'http://localhost:8000').rstrip('/')
+        allowed = public_url()
         if not trusted_origin(origin):
             return JSONResponse({'detail': 'Untrusted request origin.'}, status_code=403)
     request.state.user = user
@@ -385,11 +418,20 @@ async def guard(request: Request, call_next):
         parts = path.split('/')
         if len(parts) > 3 and parts[2] in ('sessions', 'jobs'):
             cleanup = request.method == 'DELETE' or parts[-1] in ('cancel','finalize','lifecycle')
-            sess = sessions._sessions.get(parts[3]) if cleanup else sessions.get(parts[3])
+            if cloud.enabled():
+                from .cloud.state import get
+                sess=get(parts[3],include_closed=cleanup)
+            else:sess = sessions._sessions.get(parts[3]) if cleanup else sessions.get(parts[3])
             if cleanup and not sess and parts[-1] != 'lifecycle':
                 return JSONResponse({'deleted':True, 'status':'purged'})
             if not sess or sess.owner_user_id != user['id']:
                 return JSONResponse({'detail': 'Job not found or expired.'}, status_code=404)
+        if cloud.enabled():
+            from .cloud.api import dispatch
+            try:response=await dispatch(request,user)
+            except HTTPException as exc:return JSONResponse({'detail':exc.detail},status_code=exc.status_code)
+            except ValueError as exc:return JSONResponse({'detail':str(exc)},status_code=409)
+            if response is not None:return response
         response = await call_next(request)
         response.headers['Cache-Control'] = 'no-store'
         return response
