@@ -89,24 +89,26 @@ test('split mapping survives resume and old previews cannot authorize a new revi
 test('finding links, human dismissal and download format chooser',async({page})=>{
   let generation:any={generation_id:'ui-g',candidate_sha256:'ui-hash',mode:'ai',state:'needs_review',built_slides:2,
     download_allowed:false,pdf_available:true,checks:{output_qa_visual:{status:'needs_review'}},
-    findings:[{id:'visual:0',code:'LAYOUT',check:'output_qa_visual',severity:'review',can_approve:true,output_slide:1,message:'Inspect the closing spacing'}],
+    findings:[{id:'visual:0',code:'LAYOUT',check:'output_qa_visual',severity:'review',can_approve:true,output_slide:1,message:'Inspect the closing spacing'}, {id:'visual:1',code:'POLISH',check:'output_qa_visual',severity:'warning',priority:'low',can_approve:true,output_slide:1,message:'Optional fine spacing'}],
     human_decisions:[],corrections:[],source_to_output_slides:{'0':[0]},added_slides:[{output_slide:1,kind:'closing',text:'Thank you!'}]};
   await page.route('**/api/sessions/ui-review',route=>route.fulfill({json:{session_id:'ui-review',name:'Synthetic UI review',slide_count:1,
     slides:[{index:0,title:'Opening'}],revisions:{},capabilities:{},generation}}));
   await page.route('**/api/sessions/ui-review/decisions',async route=>{
     const decision=route.request().postDataJSON();
-    expect(decision).toMatchObject({generation_id:'ui-g',candidate_sha256:'ui-hash',finding_ids:['visual:0'],rationale:'Inspected and accepted spacing'});
-    generation={...generation,state:'ready',download_allowed:true,human_decisions:[decision]};
+    expect(decision).toMatchObject({generation_id:'ui-g',candidate_sha256:'ui-hash',finding_ids:[],output_slide:1,rationale:'Inspected and accepted spacing'});
+    generation={...generation,state:'ready',download_allowed:true,human_decisions:[{...decision,finding_ids:['visual:0','visual:1']}]};
     await route.fulfill({json:{generation}});
   });
   await page.goto('/?session=ui-review');
-  await page.getByRole('button',{name:'Show all slide findings (1)'}).click();
+  await page.getByRole('button',{name:'Show all slide findings (2)'}).click();
   await page.getByRole('button',{name:'Inspect the closing spacing',exact:true}).click();
   await expect(page.getByLabel('Review slide')).toHaveValue('1');
   await expect(page.getByText('No original slide — this page was added during redesign.')).toBeVisible();
-  await page.getByRole('button',{name:'Dismiss after human review'}).click();
-  await page.getByLabel('Reason for accepting').fill('Inspected and accepted spacing');
-  await page.getByRole('button',{name:'Accept issue and dismiss'}).click();
+  await expect(page.getByText('Optional fine spacing',{exact:true})).toHaveCount(0);
+  await page.getByRole('button',{name:'Dismiss all findings for slide 2'}).click();
+  await expect(page.getByText(/Accept all 2 remaining findings/)).toBeVisible();
+  await page.getByLabel('Reason for accepting this slide').fill('Inspected and accepted spacing');
+  await page.getByRole('button',{name:'Accept and dismiss slide findings'}).click();
   await page.getByRole('button',{name:'Download',exact:true}).click();
   await expect(page.getByRole('dialog',{name:'Choose download format'})).toBeVisible();
   await page.getByLabel('PDF (.pdf)',{exact:true}).check();

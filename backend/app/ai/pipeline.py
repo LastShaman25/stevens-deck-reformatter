@@ -138,7 +138,7 @@ def execute(sess,candidate,report,directory,repair_passes=1,progress=lambda **kw
         ai['status']=status
         return {'status':'error','findings':[{'code':'AI_PIPELINE_INCOMPLETE','severity':'blocking','message':message}]}
 
-    if not config['configured']:
+    if not config['redesign_configured']:
         missing=[role for role in ('planner','reviewer') if not config[role]['configured']]
         problem=error_result('Configure AI keys for: '+', '.join(missing)+'. No AI redesign was performed.','not_configured')
         return report,{'ai_redesign':problem,'ai_visual_review':{'status':'not_run','findings':[]}},ai

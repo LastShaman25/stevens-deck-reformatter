@@ -167,7 +167,7 @@ def generate(sid: str, body: generations.GenerateRequest = generations.GenerateR
 def test_ai_configuration():
     """Explicit UI action: tiny synthetic requests, never a user's presentation."""
     results={}
-    for role in ('planner','reviewer'):
+    for role in ('redesigner','generator','reviewer'):
         result=providers.generate(role,'Return only JSON: {"ok":true}.',{'purpose':'Slide Studio connection test',
             'schema':{'type':'object','properties':{'ok':{'type':'boolean','enum':[True]}},
                       'required':['ok'],'additionalProperties':False}},max_tokens=256)

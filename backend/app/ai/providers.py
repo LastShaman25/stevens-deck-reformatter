@@ -10,8 +10,11 @@ from dotenv import dotenv_values
 ENV_FILE = Path(__file__).resolve().parents[2] / '.env'
 DEFAULTS = {'OPENAI_MODEL':'gpt-6-luna', 'ANTHROPIC_MODEL':'claude-sonnet-4-5', 'GEMINI_MODEL':'gemini-3.1-flash-lite'}
 PROVIDERS = {'openai':'OPENAI', 'anthropic':'ANTHROPIC', 'gemini':'GEMINI', 'vercel':'AI_GATEWAY'}
-PLANNING_ROLES = ('planner','element_roles','outline','author','extractor')
-GATEWAY_DEFAULTS = {'planner':'anthropic/claude-sonnet-5.5', 'reviewer':'anthropic/claude-opus-5.5-fast'}
+REDESIGN_ROLES = ('planner', 'element_roles', 'redesigner')
+GENERATION_ROLES = ('outline', 'author', 'extractor', 'generator')
+GATEWAY_DEFAULTS = {'redesigner':'openai/gpt-6-luna',
+                    'generator':'anthropic/claude-opus-5.5',
+                    'reviewer':'anthropic/claude-opus-5.5'}
 
 
 def setting(name, default=''):
@@ -30,27 +33,39 @@ def configured(provider):
 
 
 def role_config(role):
-    group='planner' if role in PLANNING_ROLES else 'reviewer'
-    explicit=setting('STEVENS_AI_'+group.upper(),setting('STEVENS_AI_PROVIDER','openai'))
-    preferred=('vercel','openai','anthropic','gemini') if role in ('planner','element_roles') else ('vercel','openai','gemini','anthropic')
+    group='redesigner' if role in REDESIGN_ROLES else 'generator' if role in GENERATION_ROLES else 'reviewer'
+    # Keep old planner settings as a fallback for existing deployments. The new
+    # workflow-specific settings always win, including during repair calls.
+    legacy='reviewer' if group=='reviewer' else 'planner'
+    explicit=setting('STEVENS_AI_'+group.upper(),setting('STEVENS_AI_'+legacy.upper(),setting('STEVENS_AI_PROVIDER','openai')))
+    preferred=('vercel','openai','anthropic','gemini') if group=='redesigner' else ('vercel','openai','gemini','anthropic')
     provider=next((p for p in preferred if configured(p)),preferred[0]) if explicit=='auto' else explicit
     if provider not in PROVIDERS:
         return {'provider':provider,'model':'','configured':False}
     name=PROVIDERS[provider]+'_MODEL'
     default=GATEWAY_DEFAULTS[group] if provider=='vercel' else DEFAULTS[name]
-    model=setting('STEVENS_AI_'+group.upper()+'_MODEL',setting('STEVENS_AI_MODEL',setting(name,default)))
+    model=setting('STEVENS_AI_'+group.upper()+'_MODEL',setting('STEVENS_AI_'+legacy.upper()+'_MODEL',setting('STEVENS_AI_MODEL',setting(name,default))))
     result={'provider':provider,'model':model,'configured':configured(provider)}
     if provider=='openai':result['reasoning_effort']=reasoning_effort(role)
     if provider=='vercel':
-        result['reasoning_effort']=setting('AI_GATEWAY_REVIEW_REASONING_EFFORT','medium') if group=='reviewer' else setting('AI_GATEWAY_REASONING_EFFORT','low')
+        effort_key={'redesigner':'AI_GATEWAY_REDESIGN_REASONING_EFFORT',
+                    'generator':'AI_GATEWAY_GENERATOR_REASONING_EFFORT',
+                    'reviewer':'AI_GATEWAY_REVIEW_REASONING_EFFORT'}[group]
+        result['reasoning_effort']=setting(effort_key,'low' if group=='reviewer' else setting('AI_GATEWAY_REASONING_EFFORT','low'))
         result['model_provider']=model.split('/')[0]
     return result
 
 
 def capabilities():
-    planner,reviewer=role_config('planner'),role_config('reviewer')
-    return {'planner':planner,'reviewer':reviewer,'configured':planner['configured'] and reviewer['configured'],
-            'independent_providers':planner.get('model_provider',planner['provider']) != reviewer.get('model_provider',reviewer['provider'])}
+    designer,generator,reviewer=role_config('planner'),role_config('author'),role_config('reviewer')
+    def independent(config):
+        return config.get('model_provider',config['provider']) != reviewer.get('model_provider',reviewer['provider'])
+    return {'planner':designer, 'redesigner':designer, 'generator':generator, 'reviewer':reviewer,
+            'configured':all(c['configured'] for c in (designer,generator,reviewer)),
+            'redesign_configured':designer['configured'] and reviewer['configured'],
+            'generation_configured':generator['configured'] and reviewer['configured'],
+            'independent_providers':independent(designer),
+            'generation_independent_providers':independent(generator)}
 
 
 def reasoning_effort(role):
@@ -215,6 +230,19 @@ def _generate_once(role, system, payload, images=(), max_tokens=16000):
                     'systemInstruction':{'parts':[{'text':system}]},'contents':[{'role':'user','parts':parts}],
                     'generationConfig':{'temperature':0,'responseMimeType':'application/json','maxOutputTokens':max_tokens}},timeout=request_timeout)
         if response.status_code!=200:
+            if response.status_code == 402:
+                # Classify known causes, without echoing provider bodies (which
+                # may contain submitted text or credentials).
+                try:
+                    error = response.json().get('error', {})
+                    detail = str(error.get('message', '')).lower() if isinstance(error, dict) else ''
+                except (ValueError, AttributeError):
+                    detail = ''
+                key_budget = 'api key budget' in detail or 'api-key budget' in detail
+                message = ('Vercel API key spending budget exceeded (HTTP 402). A team owner must raise or remove this key budget in AI Gateway Budgets & Spend. Team credits can still be available.'
+                    if config['provider']=='vercel' and key_budget else
+                    f"{config['provider']} billing blocked this request (HTTP 402). Check provider credits and spending budgets. This is not the app's request/token limit.")
+                return {**base,'status':'billing_error','http_status':402,'billing_reason':'api_key_budget' if key_budget else 'credits_or_budget','message':message}
             status={400:'invalid_request',401:'authentication_error',403:'permission_error',404:'model_unavailable',429:'rate_limited'}.get(response.status_code,'provider_error')
             return {**base,'status':status,'http_status':response.status_code,'message':f"{config['provider']} returned HTTP {response.status_code}. Check key access, model configuration, and quota."}
         failure_stage='response_json'

@@ -22,7 +22,12 @@ export interface Capabilities {
 
 export interface AIConfiguration {
   configured: boolean;
+  redesign_configured?: boolean;
+  generation_configured?: boolean;
   independent_providers: boolean;
+  generation_independent_providers?: boolean;
+  redesigner?: {provider: string; model: string; configured: boolean};
+  generator?: {provider: string; model: string; configured: boolean};
   planner: {provider: string; model: string; configured: boolean};
   reviewer: {provider: string; model: string; configured: boolean};
 }
@@ -101,6 +106,7 @@ export interface BenchmarkResult {
 export type Step = "upload" | "review" | "generate" | "download";
 
 export interface Finding {
+  priority?: 'high' | 'low';
   check?: string;
   can_approve?: boolean;
   affected_slides?: number[];
@@ -134,7 +140,7 @@ export interface Generation {
   built_slides: number;
   checks: Record<string, {status: string}>;
   findings: Finding[];
-  human_decisions: {finding_ids: string[]; rationale: string}[];
+  human_decisions: {output_slide?:number|null;finding_ids: string[]; rationale: string}[];
   source_to_output_slides: Record<string, number[]>;
   corrections: {index: number; actions: {action: string; status: string; message: string}[]}[];
 }

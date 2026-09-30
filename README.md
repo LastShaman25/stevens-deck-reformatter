@@ -35,6 +35,8 @@ npm --prefix frontend run build
 
 Open http://127.0.0.1:8000. Use one server worker: sessions are process-local. For frontend development, run `npm --prefix frontend run dev` and open port 5173 while the backend runs on port 8000. On other platforms use the equivalent virtual-environment executable and LibreOffice.
 
+Development policy: do not introduce spending, cumulative request, or cumulative token budget limits. `tools/start.ps1` explicitly forces `STEVENS_AI_MAX_CALLS=0` and `STEVENS_AI_MAX_TOKENS=0`, overriding inherited deployment settings. Keep those values at zero when launching the backend directly. Provider-side budgets are managed separately by the account owner; this launcher cannot change a Vercel API-key budget.
+
 ## What verification means
 
 Each generation has a unique directory, source/candidate/template hashes, revision version, policy version, check results, and scoped review decisions. Four required checks cover the placement plan, reopened exported content, structural formatting, and fresh PDF/PNG rendering. AI mode additionally requires a valid AI redesign and a completed visual review of every output slide. A separate output-QA agent reviews every output screenshot in presentation order, followed by deck-wide sequence and source-based accuracy review. Final download rechecks identity and returns the exact checked bytes. Permanent benchmark capture is disabled.
@@ -52,20 +54,22 @@ Missing content, unsupported required objects, failed checks, or changed files b
 
 ## AI setup and retention
 
-Create `backend/.env` from `.env.example` if it does not exist. Enter `AI_GATEWAY_API_KEY` locally; never paste credentials into the application or commit the file. The recommended configuration uses **Claude Sonnet 5.5 for planning, redesign and authoring**, and **Claude Opus 5.5 Fast for visual and output QA**, through Vercel AI Gateway:
+Create `backend/.env` from `.env.example` if it does not exist. Enter `AI_GATEWAY_API_KEY` locally; never paste credentials into the application or commit the file. The recommended configuration uses **GPT-6 Luna for redesign**, and **Claude Opus 5.5 for generation and QA**, through Vercel AI Gateway:
 
 ```dotenv
 AI_GATEWAY_API_KEY=
 STEVENS_AI_PROVIDER=vercel
-STEVENS_AI_PLANNER_MODEL=anthropic/claude-sonnet-5.5
-STEVENS_AI_REVIEWER_MODEL=anthropic/claude-opus-5.5-fast
-AI_GATEWAY_REASONING_EFFORT=low
-AI_GATEWAY_REVIEW_REASONING_EFFORT=medium
+STEVENS_AI_REDESIGNER_MODEL=openai/gpt-6-luna
+STEVENS_AI_GENERATOR_MODEL=anthropic/claude-opus-5.5
+STEVENS_AI_REVIEWER_MODEL=anthropic/claude-opus-5.5
+AI_GATEWAY_REDESIGN_REASONING_EFFORT=low
+AI_GATEWAY_GENERATOR_REASONING_EFFORT=low
+AI_GATEWAY_REVIEW_REASONING_EFFORT=low
 ```
 
-Clear old `STEVENS_AI_PLANNER` / `STEVENS_AI_REVIEWER` provider overrides when switching, or set both to `vercel`. Models can be changed without code; role-specific model variables override the shared `STEVENS_AI_MODEL`. Nonempty process environment settings override the matching `.env` entry. Use **Refresh AI configuration** after editing. Model availability and key access can be checked through **Test AI connection**. See [Gateway configuration, model comparison and deployment notes](docs/AI_GATEWAY.md).
+Remove legacy `STEVENS_AI_PLANNER` overrides when switching. Set workflow provider overrides (`STEVENS_AI_REDESIGNER`, `STEVENS_AI_GENERATOR`, `STEVENS_AI_REVIEWER`) to `vercel`, or leave them unset to inherit the shared provider. Models can be changed without code; workflow model settings override legacy planner settings and the shared `STEVENS_AI_MODEL`. Generation covers extraction, outlines, visual planning, authoring and authoring repairs; redesign covers source decisions, layout and redesign repairs. Nonempty process environment settings override matching `.env` entries. **Refresh AI configuration** shows all three assignments; **Test AI connection** tests each role. See [Gateway configuration, model comparison and deployment notes](docs/AI_GATEWAY.md).
 
-One Gateway key supplies both models in separate calls. The recommended models share Anthropic as their model provider; separate calls do not imply independent model families. The direct OpenAI, Anthropic and Gemini adapters remain available. Supported provider choices are `vercel`, `openai`, `anthropic`, `gemini`, and explicit `auto` (which prefers a configured Gateway key). Requests use strict JSON schemas, high-detail slide images and bounded timeouts/tokens. API failures, refusals and incomplete responses block verification; the app never silently switches models after an error.
+One Gateway key supplies both models in separate calls. Redesign uses OpenAI while generation and QA use Anthropic. Generation and its QA use separate calls to the same model family. The direct OpenAI, Anthropic and Gemini adapters remain available. Supported provider choices are `vercel`, `openai`, `anthropic`, `gemini`, and explicit `auto` (which prefers a configured Gateway key). Requests use strict JSON schemas, high-detail slide images and bounded timeouts/tokens. API failures, refusals and incomplete responses block verification; the app never silently switches models after an error.
 
 Select **Generate and verify**. This sends slide text, layout instructions, original previews when available, and generated slide images to the displayed providers. Invalid responses, quota/authentication failures, missing required checks, and content damage block AI verification. Repairs are accepted only when the combined checks improve without increasing deterministic blocking defects. Source words, emphasis, editable objects, charts, links, and notes are independently checked after edits. Visual AI judgment can still be wrong; unresolved review findings need inspection.
 
@@ -166,4 +170,6 @@ Mandatory redesign QA must finish. Completed visual/output QA findings can be ac
 
 New-deck outlines include editable opening and closing slides within the adaptive slide count. Approve the outline in step 1 to enable generation in step 2; edits require approval again. Opening and closing positions are protected. Native composition uses mostly red `Title Slide` for opening and statue-photo `1_Title Slide` for closing, replaces closing sample text without changing its artwork, and audits the resulting layouts. Run `python tools/verify_bookends_qa.py --live --output .local/verification/bookends-new` for a synthetic native-render and live-QA acceptance check; success requires actual download eligibility.
 
-Review controls: finding text and slide links navigate to every affected output (including split and added slides). Use **Show all slide findings** to review other pages. **Dismiss after human review** records an acceptance reason and hides the accepted finding; **Show human-reviewed findings** restores its display. Corrections use one text prompt. **Download** opens a PowerPoint/PDF choice and closes the processing session after export.
+Review controls: finding text and slide links navigate to every affected output (including split and added slides). Use **Show all slide findings** to review other pages. **Dismiss all findings for slide N** records an acceptance reason for every finding on that output slide, including hidden suggestions. Multi-slide findings remain open on other affected slides; **Show human-reviewed findings** restores its display. Corrections use one text prompt. **Download** opens a PowerPoint/PDF choice and closes the processing session after export.
+
+Finding priorities are derived from QA materiality: blocking/review = high; cosmetic warning = low. Only high-priority findings appear initially. Low-priority suggestions can be shown and do not block a completed review. Slide acceptances are scoped to the generated artifact; API, rendering, and incomplete-QA errors cannot be waived. Vercel HTTP 402 is reported as a provider billing error, with a specific API-key budget message when available, and is not automatically retried. App request/token caps and Vercel team/key budgets are separate.

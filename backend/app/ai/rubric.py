@@ -37,7 +37,8 @@ Use available content area to improve legibility instead of uniformly shrinking 
 original page and leaving unused space while essential text remains tiny. Preserve
 intentional whitespace and asymmetric compositions; there is no target fill percentage.
 Every repair is provisional until newly rendered slides pass independent QA. All
-blocking/review findings require correction or evidence-based dismissal by QA, not user waiver.
+blocking/review findings require correction or evidence-based dismissal by QA. Human
+acceptance is a separate audited release decision; never use it to claim a defect was fixed.
 Cosmetic warning findings are optional suggestions; do not redesign an otherwise readable
 slide solely to remove them. Preserve code text indentation, but code text-box alignment
 may change without changing the code itself.
@@ -285,6 +286,8 @@ A small caption gap without obstruction and differently aligned independent code
 boxes with unchanged code text do not block release. A criterion with only warnings has
 status warning; a completed slide review with only warnings has verdict passed. Retain
 warnings in the report; never invent a material defect to force cosmetic repair.
+Display priority follows materiality: blocking/review findings are HIGH priority;
+warning findings are LOW priority, optional, and never prevent download by themselves.
 not_applicable requires an explicit reason. Notes intentionally
 remain off-slide. Do not fail for personal aesthetic preference. A good unchanged slide passes.
 Each finding MUST supply affected slides and object_ids (empty only when no supplied ID

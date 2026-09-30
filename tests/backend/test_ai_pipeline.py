@@ -28,6 +28,9 @@ def config(tmp_path, monkeypatch):
                  'STEVENS_AI_PROVIDER','STEVENS_AI_MODEL','STEVENS_AI_PLANNER_MODEL','STEVENS_AI_REVIEWER_MODEL',
                  'AI_GATEWAY_API_KEY','AI_GATEWAY_MODEL','AI_GATEWAY_REASONING_EFFORT','AI_GATEWAY_REVIEW_REASONING_EFFORT']:
         monkeypatch.delenv(name,raising=False)
+    for name in ('STEVENS_AI_REDESIGNER','STEVENS_AI_REDESIGNER_MODEL','STEVENS_AI_GENERATOR',
+                 'STEVENS_AI_GENERATOR_MODEL','AI_GATEWAY_REDESIGN_REASONING_EFFORT','AI_GATEWAY_GENERATOR_REASONING_EFFORT'):
+        monkeypatch.delenv(name,raising=False)
     # Legacy provider fixtures explicitly request legacy auto selection.
     monkeypatch.setenv('STEVENS_AI_PLANNER','auto')
     monkeypatch.setenv('STEVENS_AI_REVIEWER','auto')

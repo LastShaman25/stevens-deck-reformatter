@@ -155,14 +155,14 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
       if (token === scope.current) setNotice('Revision saved. Generate to apply and verify the result.');
     });
   }
-  async function approve(ids: string[], rationale: string) {
+  async function approve(ids: string[], rationale: string, slide?: number) {
     if (!session || !generation) return false;
     const token = scope.current;
     let approved = false;
     await operation(async () => {
       const res = await request<{generation: Generation}>(`/sessions/${session.session_id}/decisions`, {
         generation_id:generation.generation_id, candidate_sha256:generation.candidate_sha256,
-        finding_ids:ids, rationale
+        finding_ids:ids, rationale, ...(slide!=null?{output_slide:slide}:{})
       });
       if (token === scope.current) {setGeneration(res.generation); approved = true;}
     });
@@ -211,7 +211,7 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
   });
   const reviewIndex=reviewingOutput ? output : current;
   const rev = revs[current] ?? empty;
-  const resolved = new Set(generation?.human_decisions.flatMap(d => d.finding_ids) ?? []);
+  const resolved = new Set(generation?.human_decisions.filter(d=>d.output_slide==null).flatMap(d => d.finding_ids) ?? []);
   const outputs = previewGeneration?.source_to_output_slides[String(current)] ?? [];
   const previewIsPrevious = !!previewGeneration && (generating || !generation || generation.generation_id !== previewGeneration.generation_id);
   const pageFindings = generation?.findings.filter(f => f.affected_slides?.length ? f.affected_slides.includes(output) : f.output_slide != null
@@ -234,12 +234,12 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
       {session && <button className="btn-ghost" onClick={startOver}>Start a new deck</button>}
     </header>
     <section className="mx-5 mt-4 rounded border border-stevens-lightgray bg-white p-4 text-sm" aria-label="AI configuration">
-      <div className="flex flex-wrap items-center gap-3"><b>AI redesign and review</b>
+      <div className="flex flex-wrap items-center gap-3"><b>AI models</b>
         <button className="btn-ghost" disabled={busy} onClick={()=>refreshAI(false)}>Refresh AI configuration</button>
         <button className="btn-ghost" disabled={busy || !aiConfig?.configured} onClick={()=>refreshAI(true)}>Test AI connection</button></div>
-      <p className="mt-2">Planner: {aiConfig?.planner.model || 'not configured'} · Reviewer: {aiConfig?.reviewer.model || 'not configured'}</p>
+      <p className="mt-2">Redesign: {(aiConfig?.redesigner ?? aiConfig?.planner)?.model || 'not configured'} · Generation: {aiConfig?.generator?.model || aiConfig?.planner.model || 'not configured'} · QA: {aiConfig?.reviewer.model || 'not configured'}</p>
       {!aiConfig?.configured ? <p className="mt-1 text-stevens-gray">{aiConfig?.planner.provider==='openai' && aiConfig?.reviewer.provider==='openai' ? 'Add OPENAI_API_KEY to backend/.env locally, then refresh.' : 'Configure the provider keys in backend/.env locally, then refresh.'} Never paste keys into reviewer notes.</p> :
-        <p className="mt-1 text-stevens-gray">{aiConfig.independent_providers ? 'Separate providers plan and review.' : 'One provider performs separate planning and review calls.'} Redesign sends slide content and rendered images to these providers. API usage may incur charges.</p>}
+        <p className="mt-1 text-stevens-gray">{aiConfig.independent_providers ? 'Redesign and QA use different model providers.' : 'Redesign and QA use separate calls to the same model provider.'} {aiConfig.generator && (aiConfig.generation_independent_providers ? 'Generation and QA use different model providers.' : 'Generation and QA use separate calls to the same model provider.')} Slide content and rendered images are sent to the configured providers. API usage may incur charges.</p>}
       {connection && Object.entries(connection).map(([role,result])=><p role="status" key={role}>{role}: {result.status}{result.message ? ` — ${result.message}` : ''}</p>)}
     </section>
     {error && <div role="alert" className="m-5 rounded border border-stevens-red bg-red-50 p-4 text-stevens-red">{error}</div>}
@@ -247,7 +247,7 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
     {!session ? <UploadStep onFile={upload} busy={busy} /> : <main className="mx-auto max-w-7xl p-5">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-bold">{session.name}</h2>
         <p className="text-sm text-stevens-gray">{session.slide_count} source slides{previewGeneration ? ` → ${previewGeneration.built_slides} output slides` : ''}</p>{previewGeneration?.added_slides?.map(slide=><a key={slide.output_slide} className="text-sm underline" href="#slide-review" onClick={()=>navigateSlide(slide.output_slide)}>View added Thank you closing · slide {slide.output_slide+1}</a>)}</div>
-        <button className="btn-red" disabled={busy || !aiConfig?.configured} onClick={generate}>{busy ? 'Working…' : 'Redesign + QA'}</button></div>
+        <button className="btn-red" disabled={busy || !(aiConfig?.redesign_configured ?? aiConfig?.configured)} onClick={generate}>{busy ? 'Working…' : 'Redesign + QA'}</button></div>
       <div className="grid gap-5 lg:grid-cols-[1fr_330px]">
         <section id="slide-review" tabIndex={-1} className="card p-5">
           <nav aria-label="Slide navigation" className="mb-4 flex flex-wrap items-center justify-between gap-2">
@@ -307,7 +307,7 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
         <div className="flex items-center justify-between gap-3"><h2 className="font-bold">{allFindings ? 'All slide findings' : 'Findings for this page'}</h2>
         <button className="btn-ghost" onClick={() => setAllFindings(!allFindings)}>{allFindings ? 'Show this page only' : `Show all slide findings (${generation.findings.length-deckFindings.length})`}</button></div>
         <p className="mt-1 text-sm text-stevens-gray">Output slide {output+1} · {current>=0 ? `Source slide ${current+1}` : 'No original slide'}{outputs.length > 1 ? ` · Part ${outputs.indexOf(output)+1} of ${outputs.length}` : ''} · {pageFindings.length} findings</p>
-        <FindingsList key={`${reviewScope}:${current}:${output}`} findings={allFindings ? generation.findings.filter(f => findingTargets(f).length>0) : pageFindings} resolved={resolved} busy={busy} onApprove={approve} slideTargets={findingTargets} onNavigate={openFindingSlide} />
+        <FindingsList key={`${reviewScope}:${current}:${output}`} findings={allFindings ? generation.findings.filter(f => findingTargets(f).length>0) : pageFindings} resolved={resolved} busy={busy} onApprove={approve} slideTargets={findingTargets} onNavigate={openFindingSlide} currentSlide={allFindings?undefined:output} decisions={generation.human_decisions} />
       </section>}
     </main>}
   </div>;

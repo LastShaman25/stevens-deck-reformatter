@@ -12,7 +12,7 @@ from slide_engine.preserve import CoverageError
 from . import grounded
 from .qa import artifact_coverage, brand_lint, render_verify
 
-POLICY_VERSION = 'visual-planning-26'
+POLICY_VERSION = 'visual-planning-27'
 REQUIRED = ('plan_coverage', 'artifact_coverage', 'structural_formatting', 'render_verification')
 QA_REQUIRED = ('ai_visual_review', 'output_qa_coverage', 'output_qa_sequence',
                'output_qa_accuracy', 'output_qa_visual')
@@ -40,10 +40,31 @@ def can_approve(record, finding):
 
 
 def approved_findings(record):
-    return {fid for d in record.get('human_decisions', [])
+    decisions = [d for d in record.get('human_decisions', [])
             if d.get('generation_id') == record.get('generation_id')
-            and d.get('candidate_sha256') == record.get('candidate_sha256')
-            for fid in d['finding_ids']}
+            and d.get('candidate_sha256') == record.get('candidate_sha256')]
+    approved = {fid for d in decisions if d.get('output_slide') is None for fid in d['finding_ids']}
+    for finding in record.get('findings', []):
+        targets = finding_slides(record, finding)
+        accepted = {d['output_slide'] for d in decisions if d.get('output_slide') is not None and finding['id'] in d['finding_ids']}
+        if targets and targets <= accepted:
+            approved.add(finding['id'])
+    return approved
+
+
+def finding_priority(finding):
+    # Existing rubric severity encodes material impact. Never downgrade missing
+    # content or incomplete checks based on a display preference.
+    return 'low' if finding.get('severity') == 'warning' else 'high'
+
+
+def finding_slides(record, finding):
+    if finding.get('affected_slides'):
+        return set(finding['affected_slides'])
+    if finding.get('output_slide') is not None:
+        return {finding['output_slide']}
+    source = next((finding[k] for k in ('source_slide','ai_source_slide','slide') if finding.get(k) is not None), None)
+    return set(record.get('source_to_output_slides', {}).get(str(source), [])) if source is not None else set()
 
 
 class GenerateRequest(BaseModel):
@@ -63,7 +84,8 @@ class Decision(BaseModel):
     model_config = ConfigDict(extra='forbid')
     generation_id: str
     candidate_sha256: str
-    finding_ids: list[str]
+    finding_ids: list[str] = Field(default_factory=list)
+    output_slide: int | None = Field(default=None, ge=0)
     rationale: str = Field(min_length=1, max_length=2000)
 
 
@@ -438,6 +460,14 @@ def decide(sess, decision):
     verify_identity(sess, record, ready=False)
     if record['generation_id'] != decision.generation_id or record['candidate_sha256'] != decision.candidate_sha256:
         raise ValueError('STALE_DECISION')
+    if decision.output_slide is not None:
+        if decision.output_slide >= (record.get('report') or {}).get('slide_count', 0):
+            raise ValueError('SLIDE_NOT_FOUND')
+        ids = [f['id'] for f in record['findings'] if decision.output_slide in finding_slides(record, f)]
+        # Resolve the whole slide on the server, including hidden low priorities.
+        if decision.finding_ids and set(decision.finding_ids) != set(ids):
+            raise ValueError('SLIDE_FINDINGS_CHANGED')
+        decision = decision.model_copy(update={'finding_ids': ids})
     reviewable = {f['id'] for f in record['findings'] if can_approve(record,f)}
     if not decision.rationale.strip() or not decision.finding_ids or not set(decision.finding_ids) <= reviewable:
         raise ValueError('FINDING_CANNOT_BE_APPROVED')
@@ -474,7 +504,7 @@ def public(record):
         'complete':bool(qa.get('synthesis')),
         'error':' '.join(f.get('message','') for f in record['checks'].get('output_qa_coverage',{}).get('findings',[]) if f.get('code') in ('OUTPUT_QA_INCOMPLETE','OUTPUT_QA_NO_RENDER'))}
     value['findings'] = [{**{k:v for k,v in f.items() if k not in ('expected','actual','evidence')},
-                          'can_approve':can_approve(record,f)} for f in record['findings']]
+                          'can_approve':can_approve(record,f),'priority':finding_priority(f)} for f in record['findings']]
     value['repair_stop_reason']=record.get('repair_stop_reason')
     value['corrections'] = (record.get('report') or {}).get('corrections', [])
     value['built_slides'] = (record.get('report') or {}).get('slide_count', 0)
