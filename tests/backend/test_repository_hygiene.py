@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_shared_helper_template_is_shipped_inside_backend():
     from slide_fixer.rebuild import TEMPLATE_PATH
-    assert Path(TEMPLATE_PATH).resolve() == ROOT / 'backend/assets/ppt_template.pptx'
+    assert Path(TEMPLATE_PATH).resolve() == ROOT / 'backend/assets/stevens_template.pptx'
     assert Path(TEMPLATE_PATH).is_file()
 
 
@@ -19,7 +19,7 @@ def test_git_ignores_credentials_but_keeps_empty_example(tmp_path):
                'frontend/.env', 'frontend/.env.development', 'backend/key.env',
                '.local/verification/result.json', 'backend/server.key']
     public = ['backend/.env.example', 'backend/app/main.py',
-              'backend/assets/ppt_template.pptx']
+              'backend/assets/stevens_template.pptx']
     for name in ignored + public:
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)

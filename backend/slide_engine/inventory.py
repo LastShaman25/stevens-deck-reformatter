@@ -91,7 +91,7 @@ def notes_links(slide, numbers):
     return links(SimpleNamespace(_element=element), slide.notes_slide.part, numbers)
 
 
-def relationship_signature(part, seen=None, normalize_blob=None):
+def relationship_signature(part, seen=None, normalize_blob=None, skip_relationships=()):
     """Content fingerprints for chart/workbook dependencies, independent of rIds."""
     seen = set() if seen is None else seen
     if part in seen:
@@ -103,7 +103,7 @@ def relationship_signature(part, seen=None, normalize_blob=None):
         'dependencies': sorted([
             {'type': rel.reltype, 'target': rel.target_ref if rel.is_external else
              relationship_signature(rel.target_part, seen, normalize_blob)}
-            for rel in part.rels.values()
+            for rel in part.rels.values() if rel.reltype not in skip_relationships
         ], key=lambda x: str(x)),
     }
 
@@ -140,7 +140,12 @@ def signature(shape, part, slide_numbers, connection_ids=None):
         value['table'] = [[{'text': normalize(c.text), 'emphasis': text_emphasis(SimpleNamespace(has_text_frame=True,text_frame=c.text_frame)), 'span': [c.span_height, c.span_width],
                             'merged': c.is_spanned} for c in row.cells] for row in shape.table.rows]
     if shape.has_chart:
-        value['chart'] = relationship_signature(shape.chart.part)
+        from pptx.opc.constants import RELATIONSHIP_TYPE as RT
+        from .chart_theme import effective
+        value['chart'] = relationship_signature(shape.chart.part, skip_relationships=(RT.THEME_OVERRIDE,))
+        # Compare resolved theme semantics, allowing an inherited theme to become
+        # a chart-local override without permitting palette/font/style changes.
+        value['chart']['effective_theme'] = canonical(effective(shape))
     for image in el.xpath('.//a:blip'):
         rid = image.get(qn('r:embed')) or image.get(qn('r:link'))
         if rid:

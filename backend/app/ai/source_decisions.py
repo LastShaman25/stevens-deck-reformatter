@@ -4,7 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from pptx import Presentation
 from pptx.oxml.ns import qn
-from slide_engine import inventory, template_policy as T
+from slide_engine import inventory, template_policy as T, templates
 from . import element_roles, providers, rubric
 
 SYSTEM = element_roles.SYSTEM + '''
@@ -52,6 +52,7 @@ logo by switching to plain remove or claiming contains_logo=false. Ambiguous cas
 The supplied source inventory contains root objects, all with parent=null. Therefore
 alignment_reference=parent is invalid here; use slide, related (with IDs), or none.'''
 SYSTEM += '''
+Native links and connector endpoints are protected. Retain objects with has_links_or_connections=true, including PDF navigation hit areas. Also retain groups, text, and backgrounds required by retained content even if they appear decorative. These are exempt from obsolete-art removal.
 For the first page, do not retain obsolete full-slide fill panels, decorative rules
 or old cover backgrounds as inset artwork. Confident non-content decoration must be
 removed with explicit IDs. A meaningful photograph remains an image, separate from
@@ -117,6 +118,7 @@ def source_objects(prs,index,digest):
             'kind':'picture' if shape._element.tag==qn('p:pic') else 'group' if shape._element.tag==qn('p:grpSp') else 'chart' if shape.has_chart else 'table' if shape.has_table else 'shape',
             'box':[round(v/914400,6) if v is not None else None for v in (shape.left,shape.top,shape.width,shape.height)],
             'content':shape.text if shape.has_text_frame else '',
+            'has_links_or_connections':bool(shape._element.xpath('.//a:hlinkClick | .//a:hlinkMouseOver | .//a:stCxn | .//a:endCxn')),
             'description':shape._element.xpath('.//p:cNvPr')[0].get('descr','') if shape._element.xpath('.//p:cNvPr') else '',
             'image_hashes':images})
     return result
@@ -147,9 +149,14 @@ def validate(value,prs,index,digest,require_logo_review=True):
     if index==0 and decision.action=='redesign':
         from slide_engine.template_policy import cover_roles
         cover_map=cover_roles(prs.slides[index],prs.slide_height,decision.model_dump())
-        if any(e.role in ('background','decoration') and e.confidence=='high' and not e.content_bearing
-               and not e.contains_logo and e.artwork_action=='retain' for e in decision.elements):
-            raise ValueError('Cover redesign must remove confidently identified obsolete non-content background/decorative artwork, with explicit removal IDs; never retain an old-cover inset.')
+        # An AI role label cannot override native links, text, groups, or content
+        # dependencies. Requiring removal of protected artwork creates an
+        # impossible retry: retain is rejected here and remove is rejected below.
+        obsolete=[e.id for e in decision.elements if e.role in ('background','decoration')
+                  and e.confidence=='high' and not e.content_bearing and not e.contains_logo
+                  and e.artwork_action=='retain' and not removal_protection(e.id,objects,prs,index,decision)]
+        if obsolete:
+            raise ValueError('Cover redesign must remove confidently identified obsolete non-content background/decorative artwork, with explicit removal IDs; never retain an old-cover inset. Correct artwork_action and remove_ids for: '+', '.join(obsolete))
     extraction_ids=[e.source_id for e in decision.logo_extractions]
     if len(extraction_ids)!=len(set(extraction_ids)) or set(extraction_ids)!={e.id for e in decision.elements if e.artwork_action=='extract_logo'}:
         raise ValueError('Each extract_logo decision requires exactly one matching region.')
@@ -198,6 +205,18 @@ def validate(value,prs,index,digest,require_logo_review=True):
     return decision
 
 
+def removal_protection(sid,objects,prs,index,decision):
+    obj=next(o for o in objects if o['id']==sid)
+    if obj['kind'] not in ('picture','shape') or obj['content'].strip(): return 'native content'
+    shape=next(s for origin,_,s in inventory.source_objects(prs.slides[index])
+               if origin==obj['origin'] and s.shape_id==obj['shape_id'])
+    if shape._element.xpath('.//a:hlinkClick | .//a:hlinkMouseOver | .//a:stCxn | .//a:endCxn'):
+        return 'link or connection'
+    if any(sid in e.related_ids and e.id not in decision.remove_ids for e in decision.elements):
+        return 'retained content dependency'
+    return None
+
+
 def section_footer_removal(decision,role,obj,prs):
     """User-authorized footer exception, never a whole background or a group."""
     if not role or decision.slide_kind!='section' or role.role!='logo' or role.confidence!='high' or role.content_bearing:
@@ -220,7 +239,7 @@ def run(sess,progress,generate=providers.generate,template_images=(),indices=Non
         if not image.is_file(): raise ValueError('Original screenshot required before source decisions.')
         cache=Path(sess.dir,'source-decision-cache') if getattr(sess,'dir',None) else None
         cache_key=hashlib.sha256(json.dumps([digest,i,sess.revisions.get(str(i),{}),SYSTEM,
-            providers.capabilities(),inventory.sha256(image)],sort_keys=True).encode()).hexdigest()
+            providers.capabilities(),templates.current_id(),inventory.sha256(templates.path()),inventory.sha256(image)],sort_keys=True).encode()).hexdigest()
         cached=cache/(cache_key+'.json') if cache else None
         if cached and cached.is_file() and not feedback:
             try:
@@ -249,7 +268,7 @@ def run(sess,progress,generate=providers.generate,template_images=(),indices=Non
                 if obj['suggested_logo_regions'] and len(raw_images)<4:
                     raw_images.append((f'FULL RAW IMAGE {sid}; extraction coordinates 0..1000',path))
             except ValueError: pass
-        wanted={T.OPENING_LAYOUT} if i==0 else {'Title Only','Title and Content','Section Header',T.CLOSING_LAYOUT}
+        wanted={T.OPENING_LAYOUT} if i==0 else {T.CONTENT_LAYOUT,'Title and Content',T.SECTION_LAYOUT,T.CLOSING_LAYOUT}
         references=[(label,path) for label,path in template_images if label.removeprefix('APPROVED TEMPLATE: ') in wanted]
         payload={'stage':'source_decisions','source_slide':i,'source_ordinal':i+1,
             'source_canvas_emu':[prs.slide_width,prs.slide_height],
@@ -260,7 +279,7 @@ def run(sess,progress,generate=providers.generate,template_images=(),indices=Non
             'reviewer_note':sess.revisions.get(str(i),{}),'schema':decision_schema()}
         protected_images=set()
         for attempt in range(2):
-            response=generate('element_roles',SYSTEM,payload,[('ORIGINAL source slide',image),*references,*raw_images],max_tokens=16000)
+            response=generate('element_roles',templates.prompt(SYSTEM),payload,[('ORIGINAL source slide',image),*references,*raw_images],max_tokens=16000)
             calls.append({'role':'source_decision','source_slide':i,'validation_attempt':attempt,
                           **{k:v for k,v in response.items() if k!='data'}})
             if response['status']!='completed': raise ValueError('Source decision did not complete: '+response.get('message',response['status']))

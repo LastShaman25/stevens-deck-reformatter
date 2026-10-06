@@ -8,6 +8,23 @@ const session = {session_id:'test',name:'Fixture.pptx',slide_count:1,slides:[{in
 const response = (data:unknown,ok=true) => Promise.resolve({ok,json:async()=>data} as Response);
 beforeEach(() => {window.history.replaceState({},'', '/?session=test');vi.restoreAllMocks();});
 
+test.each(['cpe','stevens'] as const)('upload requires and submits the %s format choice',async(template)=>{
+  window.history.replaceState({},'', '/');
+  const fetcher=vi.fn((url:string)=>response(url==='/api/health'?{capabilities:{ai}}:{...session,template_id:template}));
+  vi.stubGlobal('fetch',fetcher);
+  const {container}=render(<App/>);
+  const input=container.querySelector('input[type=file]')!;
+  const file=new File(['test'],'source.pptx');
+  fireEvent.change(input,{target:{files:[file]}});
+  expect(screen.getByRole('alert')).toHaveTextContent('Choose CPE or Stevens');
+  expect(fetcher.mock.calls.some(([url])=>url==='/api/sessions')).toBe(false);
+  fireEvent.click(screen.getByRole('radio',{name:template==='cpe'?/^CPE/:/^Stevens/}));
+  fireEvent.change(input,{target:{files:[file]}});
+  expect(await screen.findByText(`Format: ${template==='cpe'?'CPE':'Stevens'}`)).toBeVisible();
+  const call=(fetcher.mock.calls as unknown as [string,RequestInit][]).find(([url])=>url==='/api/sessions')!;
+  expect((call[1].body as FormData).get('template_id')).toBe(template);
+});
+
 test('completed QA with cosmetic suggestions enables download and labels them nonblocking',async()=>{
   const generation={generation_id:'g',candidate_sha256:'abc',mode:'ai',state:'ready',download_allowed:true,
     built_slides:1,checks:{ai_visual_review:{status:'passed'}},
@@ -61,7 +78,7 @@ test('a failed revision save is visible and stops generation',async()=>{
   const fetcher=vi.fn((url:string)=>url.endsWith('/revise') ? response({detail:'Save failed'},false) : response(session));
   vi.stubGlobal('fetch',fetcher);render(<App/>);
   fireEvent.change(await screen.findByLabelText('Reviewer note'),{target:{value:'Changed'}});
-  fireEvent.click(screen.getByRole('button',{name:'Redesign + QA'}));
+  fireEvent.click(screen.getByRole('button',{name:'Format + QA'}));
   expect(await screen.findByRole('alert')).toHaveTextContent('Save failed');
   expect(fetcher.mock.calls.some(([url])=>url.endsWith('/generate'))).toBe(false);
 });
@@ -102,27 +119,27 @@ test('editing and saving instructions retains the candidate image but removes ap
   expect(screen.getByAltText('Generated candidate')).toHaveAttribute('src',url);
 });
 
-test('configured AI mode sends explicit mode and requires full review',async()=>{
+test('local formatting sends preserve mode and displays QA failures',async()=>{
   const generation={generation_id:'g',candidate_sha256:'abc',mode:'ai',state:'error',built_slides:1,checks:{ai_visual_review:{status:'error'}},findings:[{id:'ai',severity:'blocking',message:'Provider timed out'}],human_decisions:[],source_to_output_slides:{'0':[0]},corrections:[]};
   const fetcher=vi.fn((url:string,_options?:RequestInit)=>response(url.endsWith('/generate') ? {generation} : {...session,capabilities:{...session.capabilities,ai}}));
   vi.stubGlobal('fetch',fetcher);render(<App/>);
   await screen.findByText(/claude-test/);
   expect(screen.queryByRole('combobox',{name:'Generation mode'})).not.toBeInTheDocument();
   expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
-  expect(screen.getByText(/mandatory visual review/)).toBeVisible();
-  fireEvent.click(screen.getByRole('button',{name:'Redesign + QA'}));
+  expect(screen.getByText(/Applies the selected template locally/)).toBeVisible();
+  fireEvent.click(screen.getByRole('button',{name:'Format + QA'}));
   await screen.findByText('Provider timed out');
   fireEvent.click(screen.getByText('Deck-wide findings (1)'));
   expect(screen.getByText('Provider timed out')).toBeVisible();
   const call=fetcher.mock.calls.find(([url])=>url.endsWith('/generate'));
-  expect(JSON.parse(call?.[1]?.body as string)).toEqual({mode:'ai',repair_passes:1});
+  expect(JSON.parse(call?.[1]?.body as string)).toEqual({mode:'preserve',repair_passes:0});
   expect(screen.getByRole('button',{name:'Download'})).toBeDisabled();
 });
 
-test('missing keys block AI generation and connection testing',async()=>{
+test('missing keys do not block local formatting but block connection testing',async()=>{
   vi.stubGlobal('fetch',vi.fn(()=>response({...session,capabilities:{}})));render(<App/>);
   await screen.findByLabelText('Reviewer note');
-  expect(screen.getByRole('button',{name:'Redesign + QA'})).toBeDisabled();
+  expect(screen.getByRole('button',{name:'Format + QA'})).toBeEnabled();
   expect(screen.getByRole('button',{name:'Test AI connection'})).toBeDisabled();
 });
 
@@ -143,7 +160,7 @@ test('progress polling does not request a preview before rendering finishes',asy
     return response(started ? {...session,generation} : session);
   }));
   render(<App/>);await screen.findByLabelText('Reviewer note');
-  fireEvent.click(screen.getByRole('button',{name:'Redesign + QA'}));
+  fireEvent.click(screen.getByRole('button',{name:'Format + QA'}));
   await screen.findByText('rendering',{}, {timeout:3500});
   expect(screen.queryByAltText('Generated candidate')).not.toBeInTheDocument();
   finish(await response({generation:{...generation,state:'ready',progress:{stage:'finished'}}}));
@@ -156,7 +173,7 @@ test('OpenAI-only configuration identifies the local key and selected model',asy
   render(<App/>);
   expect(await screen.findByText(/Add OPENAI_API_KEY/)).toBeVisible();
   expect(screen.getByText('Redesign: gpt-6-luna · Generation: gpt-6-luna · QA: gpt-6-luna')).toBeVisible();
-  expect(screen.getByRole('button',{name:'Redesign + QA'})).toBeDisabled();
+  expect(screen.getByRole('button',{name:'Format + QA'})).toBeEnabled();
 });
 
 test('shows independent model assignments for redesign generation and QA',async()=>{
@@ -266,7 +283,7 @@ test('slide navigation is disabled during generation and preserves unsaved notes
   fireEvent.click(screen.getByRole('button',{name:'Next slide'}));
   fireEvent.click(screen.getByRole('button',{name:'Previous slide'}));
   expect(screen.getByLabelText('Reviewer note')).toHaveValue('Keep this unsaved note');
-  fireEvent.click(screen.getByRole('button',{name:'Redesign + QA'}));
+  fireEvent.click(screen.getByRole('button',{name:'Format + QA'}));
   await waitFor(()=>expect(finish).toBeDefined());
   expect(screen.getByRole('button',{name:'Next slide'})).toBeDisabled();
   expect(screen.getByRole('button',{name:'Previous slide'})).toBeDisabled();
@@ -280,6 +297,25 @@ test('incomplete checks prevent slide dismissal',async()=>{
   vi.stubGlobal('fetch',vi.fn(()=>response(value)));render(<App/>);
   expect(await screen.findByRole('button',{name:'Dismiss all findings for slide 1'})).toBeDisabled();
   expect(screen.getByRole('button',{name:'Download'})).toBeDisabled();
+});
+
+test('completed findings can be dismissed alongside an undismissable API failure',async()=>{
+  const initial={...reviewGeneration,state:'error',findings:[
+    {id:'review',code:'LAYOUT',message:'Review the title',severity:'review',can_approve:true,output_slide:0},
+    {id:'system',code:'API_ERROR',message:'Provider billing failed',severity:'blocking',can_approve:false,output_slide:0}
+  ]};
+  const fetcher=vi.fn((url:string)=>response(url.endsWith('/decisions')?
+    {generation:{...initial,human_decisions:[{output_slide:0,finding_ids:['review'],rationale:'Title inspected'}]}}:
+    {...reviewSession,generation:initial}));
+  vi.stubGlobal('fetch',fetcher);render(<App/>);
+  fireEvent.click(await screen.findByRole('button',{name:'Dismiss reviewable findings for slide 1'}));
+  fireEvent.change(screen.getByLabelText('Reason for accepting this slide'),{target:{value:'Title inspected'}});
+  fireEvent.click(screen.getByRole('button',{name:'Accept and dismiss slide findings'}));
+  await screen.findByRole('button',{name:'Show human-reviewed findings (1)'});
+  expect(screen.queryByText('Review the title')).not.toBeInTheDocument();
+  expect(screen.getByText('Provider billing failed')).toBeVisible();
+  expect(screen.getByRole('button',{name:'Download'})).toBeDisabled();
+  expect(screen.getByRole('button',{name:'Dismiss all findings for slide 1'})).toBeDisabled();
 });
 
 test('preparation errors explain why QA has not started',async()=>{
@@ -305,4 +341,12 @@ test('a multi-slide finding stays open on the other slide after dismissal',async
   expect(screen.getAllByText('Inspect split pages')).toHaveLength(1);
   expect(screen.getByRole('button',{name:'Dismiss all findings for slide 3'})).toBeEnabled();
   expect(screen.getByRole('button',{name:'Download'})).toBeDisabled();
+});
+
+
+test('completed formatting permits download while retaining QA errors',async()=>{
+  const generation={generation_id:'g',candidate_sha256:'abc',mode:'preserve',state:'error',download_allowed:true,built_slides:1,checks:{output_qa_visual:{status:'error'}},findings:[{id:'qa',severity:'blocking',message:'QA provider timed out'}],human_decisions:[],source_to_output_slides:{'0':[0]},corrections:[]};
+  vi.stubGlobal('fetch',vi.fn(()=>response({...session,generation})));
+  render(<App/>);await screen.findByText('QA provider timed out');
+  expect(screen.getByRole('button',{name:'Download'})).toBeEnabled();
 });

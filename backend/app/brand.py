@@ -5,7 +5,7 @@ palette, plus the V1-locked additions the reviewer signed off on).
 """
 
 # ---- official Stevens palette ----
-# Locked to the TEMPLATE THEME (assets/ppt_template.pptx) so tool-generated
+# Locked to the TEMPLATE THEME (assets/stevens_template.pptx) so tool-generated
 # slides match what PowerPoint auto-applies when content is pasted into the
 # template. (Source of truth = the .pptx theme, not the older brand image:
 # image said A32638/004380/000000; the shipped template uses these.)
@@ -52,7 +52,7 @@ BOX_BORDER_PT = 1.0
 SPLIT_BULLET_CAP = 9
 SPLIT_WORD_CAP = 130
 
-# Template layout names (in assets/ppt_template.pptx)
+# Template layout names (in assets/stevens_template.pptx)
 L_TITLE = "Title Slide"
 L_TITLE_ONLY = "Title Only"
 L_SECTION = "Section Header"

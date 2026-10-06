@@ -11,7 +11,7 @@ from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION
 from .. import grounded, brand
 from .graphics import render_plot, render_equation
 from . import diagrams
-from slide_engine import template_policy as T
+from slide_engine import template_policy as T, templates
 
 
 def text(shape, lines, size):
@@ -28,13 +28,13 @@ def text(shape, lines, size):
 
 def compose(spec, path, assets, pages=(), kinds=None):
     assets = Path(assets); assets.mkdir(parents=True, exist_ok=True)
-    prs = Presentation(grounded.TEMPLATE_PATH)
+    prs = Presentation(templates.path())
     T.retain_opening_artwork(prs)
     for item in list(prs.slides._sldIdLst):
         prs.part.drop_rel(item.rId); prs.slides._sldIdLst.remove(item)
-    layout = next(l for l in prs.slide_layouts if l.name == 'Title Only')
-    cover_layout = next(l for l in prs.slide_layouts if l.name == T.OPENING_LAYOUT)
-    closing_layout = next(l for l in prs.slide_layouts if l.name == T.CLOSING_LAYOUT)
+    layout = next(l for l in templates.layouts(prs) if l.name == T.CONTENT_LAYOUT)
+    cover_layout = next(l for l in templates.layouts(prs) if l.name == T.OPENING_LAYOUT)
+    closing_layout = next(l for l in templates.layouts(prs) if l.name == T.CLOSING_LAYOUT)
     # The closing layout contains sample text as artwork, not placeholders.
     # Replace that sample copy in this output package, retaining photo/logo art.
     for shape in list(closing_layout.shapes):
@@ -49,18 +49,21 @@ def compose(spec, path, assets, pages=(), kinds=None):
         slide = prs.slides.add_slide(cover_layout if index==0 else closing_layout if closing else layout)
         for sh in list(slide.shapes):
             sh._element.getparent().remove(sh._element)
-        title = slide.shapes.add_textbox(*(Inches(v) for v in (T.CLOSING_TITLE if closing else T.COVER_TITLE if bookend else (.7,.4,11.7,1.4))))
+        title = slide.shapes.add_textbox(*(Inches(v) for v in (T.CLOSING_TITLE if closing else T.COVER_TITLE if bookend else (*T.CONTENT[:3],1.4))))
         title.name = 'authored-title'
         text(title, [content.title], 40)
+        content_height=4.4 if templates.current_id()=='stevens' else T.CONTENT[1]+T.CONTENT[3]-2
         visual = any(v is not None for v in (content.chart, content.plot, content.equation, content.figure_page, content.table, content.diagram))
-        body = slide.shapes.add_textbox(*(Inches(v) for v in (T.CLOSING_DETAILS if closing else T.COVER_DETAILS if bookend else (.75,2,4.0 if visual else 11.5,4.4))))
+        body = slide.shapes.add_textbox(*(Inches(v) for v in (T.CLOSING_DETAILS if closing else T.COVER_DETAILS if bookend else (.75,2,4.0 if visual else min(11.5,T.CONTENT[0]+T.CONTENT[2]-.75),content_height))))
         body.name = 'authored-body'
         text(body, content.bullets, 20 if sum(map(len, content.bullets)) < 600 else 18)
         if bookend:
+            from .text_fit import fit_bookend_body
+            fit_bookend_body(body)
             for shape in (title,body):
                 for paragraph in shape.text_frame.paragraphs:
                     paragraph.font.color.rgb=RGBColor.from_string(brand.WHITE)
-        vx,vy,vw,vh=T.COVER_SUPPORT if index==0 else (5,2,7.2,4.3)
+        vx,vy,vw,vh=T.COVER_SUPPORT if index==0 else (5,2,min(7.2,T.CONTENT[0]+T.CONTENT[2]-5),min(4.3,content_height))
         image_hash = None
         diagram_shapes = []
         if content.diagram:

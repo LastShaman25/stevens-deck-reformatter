@@ -33,7 +33,7 @@ from slide_engine import autofix                                   # noqa: E402
 
 import fitz                                                     # noqa: E402
 
-TEMPLATE = os.path.join(_BACKEND, "assets", "ppt_template.pptx")
+TEMPLATE = os.path.join(_BACKEND, "assets", "stevens_template.pptx")
 EMU = 914400
 
 # Presets that are safe to rebuild as a rounded rectangle box. Anything else

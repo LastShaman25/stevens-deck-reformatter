@@ -333,7 +333,8 @@ def test_real_renderer_native_chart_plot_and_math(tmp_path):
     assert len(result['pages'])==3
 
 
-def test_authoring_api_approval_release_identity_and_cleanup(monkeypatch):
+@pytest.mark.parametrize('qa_error',[False,True])
+def test_authoring_api_approval_release_identity_and_cleanup(monkeypatch,qa_error):
     admin=login();sid=new_job(admin)
     outline=simple_outline(1)
     assert admin.put(f'/api/jobs/{sid}/outline',json={'revision':0,'outline':outline.model_dump()}).status_code==200
@@ -353,6 +354,13 @@ def test_authoring_api_approval_release_identity_and_cleanup(monkeypatch):
     assert result.status_code==200,result.text
     assert service.source_evidence(sessions.get(sid))['user_visual_overrides'][0]['kind']=='text_only'
     record=result.json()['generation'];assert record['state']=='ready',record['findings']
+    if qa_error:
+        # The same owner/identity protections apply despite failed QA.
+        current=sessions.get(sid).generation
+        generations.add_check(current,'output_qa_visual',{'status':'error','findings':[{'code':'TIMEOUT','severity':'blocking'}]})
+        generations.settle(current)
+        assert current['state']=='error'
+        assert generations.download_allowed(current)
     response=admin.get(f"/api/jobs/{sid}/download?generation_id={record['generation_id']}")
     assert response.status_code==200
     assert __import__('hashlib').sha256(response.content).hexdigest()==record['candidate_sha256']

@@ -5,6 +5,23 @@ import {Creation} from './Creation';
 const response=(value:unknown)=>Promise.resolve({ok:true,json:async()=>value} as Response);
 beforeEach(()=>{vi.restoreAllMocks();history.replaceState({},'','/?job=demo');});
 
+test('new presentations require and submit a template choice',async()=>{
+  history.replaceState({},'','/');
+  const job={id:'demo',request:{source:'topic',template_id:'cpe'},outline:null,revision:0,approved_hash:null,pages:[],progress:{},expires_at:1,generation:null};
+  const fetcher=vi.fn(()=>response(job));vi.stubGlobal('fetch',fetcher);
+  const {container}=render(<Creation onHome={()=>{}}/>);
+  expect(screen.getByLabelText('Presentation format')).toBeRequired();
+  fireEvent.submit(container.querySelector('form')!);
+  expect(fetcher).not.toHaveBeenCalled();
+  fireEvent.change(screen.getByLabelText('Presentation format'),{target:{value:'cpe'}});
+  fireEvent.change(screen.getByLabelText('Topic or starting outline'),{target:{value:'Example'}});
+  fireEvent.change(screen.getByLabelText('Audience'),{target:{value:'Students'}});
+  fireEvent.submit(container.querySelector('form')!);
+  await waitFor(()=>expect(fetcher).toHaveBeenCalled());
+  const call=(fetcher.mock.calls as unknown as [string,RequestInit][])[0];
+  expect(JSON.parse(String(call[1].body)).template_id).toBe('cpe');
+});
+
 test('approval clearly unlocks generation and edits require approval again',async()=>{
   let job={id:'demo',request:{source:'topic'},revision:1,approved_hash:null as string|null,
     outline:{title:'Test',rationale:'Three slides including opening and closing.',slides:[

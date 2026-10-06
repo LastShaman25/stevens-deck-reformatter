@@ -33,6 +33,7 @@ export interface AIConfiguration {
 }
 
 export interface SessionInfo {
+  template_id?: 'cpe' | 'stevens';
   preview_generation?: Generation | null;
   generation?: Generation | null;
   revision_version?: number;
@@ -121,6 +122,7 @@ export interface Finding {
 }
 
 export interface Generation {
+  preserved_image_regions?: number;
   added_slides?: {output_slide:number;kind:string;text:string;authorization:string}[];
   source_decisions?: Record<string,{action:'redesign'|'keep_original';reason:string;removed_artwork:number;extracted_logos?:number}>;
   qa_execution?: {requests:number;reviewed_slides:number;total_slides:number;complete:boolean;error:string;redesign_reviewed_slides?:number;redesign_review_status?:string};

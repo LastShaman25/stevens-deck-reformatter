@@ -119,3 +119,22 @@ def test_billing_failure_is_actionable_redacted_and_not_retried(gateway,monkeypa
     assert result['status']=='billing_error' and result['billing_reason']==reason
     assert result['http_status']==402 and result['request_attempts']==len(calls)==1
     assert 'vck-test-secret' not in json.dumps(result) and 'private-source-text' not in json.dumps(result)
+
+
+def test_current_example_routes_every_workflow_directly_to_openai(config,monkeypatch):
+    from pathlib import Path
+    from test_openai import reply, completed
+    example=Path(__file__).resolve().parents[2]/'backend'/'.env.example'
+    config.write_text(example.read_text().replace('your_openai_api_key','sk-template-test'))
+    sent=[]
+    def post(url,**kwargs):
+        sent.append((url,kwargs))
+        return reply(completed({'ok':True}))
+    monkeypatch.setattr(providers.requests,'post',post)
+    for role in ('planner','element_roles','extractor','outline','author','reviewer','output_qa'):
+        selection=providers.role_config(role)
+        assert selection['provider']=='openai' and selection['model']=='gpt-6-luna'
+        assert providers.generate(role,'JSON',{})['status']=='completed'
+    assert len(sent)==7
+    assert all(url=='https://api.openai.com/v1/responses' for url,_ in sent)
+    assert all(kwargs['headers']['Authorization']=='Bearer sk-template-test' for _,kwargs in sent)

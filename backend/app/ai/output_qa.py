@@ -1,5 +1,7 @@
 """Independent ordered screenshot review, global sequence/accuracy synthesis."""
 import json
+import re
+from copy import deepcopy
 from pathlib import Path
 from typing import Literal
 from PIL import Image
@@ -7,7 +9,7 @@ from pptx import Presentation
 from pydantic import BaseModel, ConfigDict, Field
 from slide_engine.inventory import sha256
 from slide_engine import template_policy
-from . import providers, rubric, layout
+from . import providers, rubric, layout, qa_payload
 from .rubric import CriterionResult, Criterion
 
 CHECKS = ('output_qa_coverage', 'output_qa_sequence', 'output_qa_accuracy')
@@ -22,6 +24,9 @@ Mark newly introduced unsupported claims unverified, never invent citations.
 The bundled template artwork is explicitly approved separately from source content.
 Read each slide's template_contract: cover and interior rules differ. The opening MUST be mostly red with a faint tower and no campus photo. The statue
 photo is approved only on the closing layout. Reject swapped opening/closing artwork.
+For large requests, FIELD_ref refers to the full FIELD value in shared_metadata.
+Resolve these shared definitions before checking each slide; all referenced rules
+and object IDs apply exactly as if written inline. They are metadata, not findings.
 For redesign tasks EVERY source-derived output screenshot is paired with its ORIGINAL source image
 and source ordinal, including split-slide mappings. Compare them directly. Verify all
 code lines, whitespace/indentation, numbers, units, notes, figures and captions, not
@@ -31,6 +36,22 @@ Preserve every source logo, especially small top-right marks, with proportions a
 legibility. A keep_original decision requires an unchanged source composition; reject
 new frames, shrinking, rewrapping, overlaid branding or needless modification of an
 already-matching template. A removal reason never excuses lost meaningful content.
+PDF import evidence records removal of repeated navigation/footer furniture and
+title backdrops, and preservation of embedded-font text as source image regions.
+Verify those decisions against the original. Old navigation controls, duplicated
+running titles/authors and title backdrops need not remain on the new template.
+Unique captions, citations, logos and meaningful content must still be preserved.
+Image regions intentionally retain exact source typography; assess their actual
+legibility and content, not whether raster text appears in extracted native text.
+Pages with no extractable PDF text layer are preserved as page images, without OCR.
+Their labels/equations may be visible only in the paired images. Review those pixels;
+an empty native-text inventory does not prove missing content. This preservation
+does not waive visual legibility, template placement or content fidelity checks.
+GEOMETRY: all box arrays use [left, top, width, height] in inches, NOT corner pairs.
+Use supplied named edges for boundary checks. For example [0.7,0.4,11.7,6.05]
+ends at right=12.4 and bottom=6.45, NOT bottom=6.05. The height is not the bottom.
+An object touching a content boundary is contained; it does not overlap a footer
+that begins below that boundary. Still report actual visible clipping/occlusion.
 An authorized_addition is the user-required final Thank you page, with no source original.
 Compare it against its explicit authorization and the approved statue closing template;
 do not flag that exact authorized addition as invented content. It must be last and reviewed.
@@ -60,7 +81,20 @@ dependencies. reviewed must equal the provided expected ordinals in exactly that
 For slide_review, slide_audits must cover every expected ordinal exactly once in order,
 with all eight rubric criteria and concrete evidence. For deck_synthesis, return an
 empty slide_audits list and cross-check the earlier audits against every final screenshot.
-An empty findings list means no issues observed, not a guarantee of factual truth.'''+ '\n'+rubric.QA
+For EACH slide audit, match checks to findings whose slides list includes that exact
+ordinal AND whose criterion matches. A warning, review or blocking check needs an
+actionable finding for that slide and criterion. A finding on another slide does not
+satisfy this requirement. Check this correspondence before returning the JSON.
+An empty findings list means no issues observed, not a guarantee of factual truth.'''+ '\n'+rubric.QA+'''
+REVIEW SCOPE: obey review_scope for this request. In slide_review you see only
+expected ordinals, which may be a partial deck. Other slides are reviewed separately.
+Never infer a missing opening, closing, conclusion or intermediate slide from its
+absence in this batch. Report findings only for visible expected ordinals. Assess
+visible transitions within this batch; defer whole-deck completeness, closing-last
+requirements and cross-batch sequence to deck_synthesis, which sees every slide.
+In deck_synthesis enforce all whole-deck rules, including the required closing.
+These scope rules qualify the whole-deck rubric above; they do not waive defects
+that are visible in a batch.'''
 
 
 class Finding(rubric.RepairEvidence):
@@ -86,6 +120,64 @@ class Review(BaseModel):
     slide_audits: list[SlideAudit] = Field(max_length=100)
 
 
+def synthesis_slide(item):
+    """Keep content and identity; batches already reviewed full object geometry."""
+    value = {k:v for k,v in item.items() if k not in ('image','sha256','objects','template_context')}
+    value['object_columns'] = ['id','kind','content']
+    value['objects'] = [[o.get(k) for k in value['object_columns']] for o in item['objects']]
+    value['template_context'] = [{k:o[k] for k in ('id','kind','content') if k in o}
+                                 for o in item['template_context']]
+    if item.get('original'):
+        value['original'] = {'source_ordinal':item['original']['source_ordinal']}
+    return value
+
+
+def synthesis_ledger(ledger):
+    # Keep all findings verbatim and all criterion statuses. The screenshots and
+    # content supply evidence without repeating passed-check prose for every slide.
+    return [{'request_ordinals':b['request_ordinals'], 'response':{
+        'reviewed':b['response']['reviewed'], 'summary':b['response']['summary'],
+        'findings':b['response']['findings'],
+        'slide_audits':[{'ordinal':a['ordinal'],
+            'checks':{c['criterion']:c['status'] for c in a['checks']}}
+            for a in b['response']['slide_audits']]}} for b in ledger]
+
+
+def consolidate_findings(findings):
+    """Coalesce repeated batch/synthesis observations without losing evidence.
+
+    Same location alone is insufficient: two independent defects can affect the
+    same object. Require the same repair wording (allowing minor paraphrases).
+    Unlocated findings are merged only when their complete evidence is equal.
+    """
+    result = []
+    stop = {'the', 'a', 'an', 'and', 'from', 'of', 'on', 'in', 'this', 'its', 'to'}
+    def words(value): return set(re.findall(r'\w+', value.lower())) - stop
+    for item in findings:
+        duplicate = None
+        for other in result:
+            if (item['criterion'], sorted(item['slides']), sorted(item['object_ids'])) != (
+                    other['criterion'], sorted(other['slides']), sorted(other['object_ids'])): continue
+            if not item['object_ids'] and item['region'] != other['region']: continue
+            a, b = words(item['required_correction']), words(other['required_correction'])
+            same_repair = bool(a and b) and len(a & b) / len(a | b) >= .7
+            a, b = words(item['message']), words(other['message'])
+            same_description = len(a & b) >= 4 and len(a & b) / len(a | b) >= .6
+            if item == {k:v for k,v in other.items() if k != 'observations'} or (item['object_ids'] and (same_repair or same_description)):
+                duplicate = other; break
+        if duplicate is None:
+            result.append(deepcopy(item)); continue
+        observations = duplicate.setdefault('observations', [{k:duplicate[k] for k in
+            ('message','evidence','required_correction','acceptance_condition')}])
+        observations.append({k:item[k] for k in ('message','evidence','required_correction','acceptance_condition')})
+        if {'warning':0,'review':1,'blocking':2}[item['severity']] > {'warning':0,'review':1,'blocking':2}[duplicate['severity']]:
+            duplicate['severity'] = item['severity']
+        accuracy_rank = {'not_applicable':0,'supported':1,'unverified':2,'contradicted':3}
+        if accuracy_rank[item['accuracy']] > accuracy_rank[duplicate['accuracy']]:
+            duplicate['accuracy'] = item['accuracy']
+    return result
+
+
 def prepare(candidate, render):
     if render.get('candidate_sha256') != sha256(candidate): raise ValueError('Render identity mismatch.')
     prs = Presentation(candidate)
@@ -98,11 +190,21 @@ def prepare(candidate, render):
         path = Path(page['png'])
         if path.name != f'slide-{i}.png': raise ValueError('Screenshot ordinal mismatch.')
         with Image.open(path) as im: im.verify()
+        def edges(box):
+            x,y,w,h=box
+            return {'left':x,'top':y,'right':round(x+w,6),'bottom':round(y+h,6)}
+        contract=template_policy.contract(slide)
+        contract['box_format']='[left, top, width, height], inches; right=left+width, bottom=top+height'
+        contract['region_edges']={key:edges(value) for key,value in contract.items()
+                                  if key.endswith(('_box','_footer')) and isinstance(value,(tuple,list)) and len(value)==4}
+        objects=layout.describe(slide)
+        for obj in objects:
+            if obj.get('box'): obj['edges']=edges(obj['box'])
         manifest.append({'ordinal': i+1, 'slide_id': int(slide.slide_id), 'image': str(path),
                          'sha256': sha256(path), 'text': '\n'.join(s.text for s in slide.shapes if s.has_text_frame),
                          'notes': slide.notes_slide.notes_text_frame.text if slide.has_notes_slide else '',
-                         'objects':layout.describe(slide), 'template_context':layout.template_context(slide),
-                         'template_contract':template_policy.contract(slide)})
+                         'objects':objects, 'template_context':layout.template_context(slide),
+                         'template_contract':contract})
     return manifest
 
 
@@ -128,6 +230,8 @@ def run(sess, record, evidence=None):
                 with Image.open(original) as image: image.verify()
                 item['original']={'source_ordinal':si+1,'image':str(original),'sha256':sha256(original)}
                 item['source_decision']=(record.get('report') or {}).get('source_decisions',{}).get(str(si),{})
+                imported = record.get('pdf_import', {}).get('page_evidence', [])
+                if si < len(imported): item['pdf_import_evidence'] = imported[si]
                 if original_prs is not None:
                     source_slide=original_prs.slides[si]
                     original_notes=source_slide.notes_slide.notes_text_frame.text if source_slide.has_notes_slide else ''
@@ -143,9 +247,24 @@ def run(sess, record, evidence=None):
             sess.ensure_active()
             expected = [p['ordinal'] for p in items]
             payload = {'stage': 'deck_synthesis' if synthesis else 'slide_review', 'expected': expected,
-                'slides': [{k:v for k,v in p.items() if k not in ('image','sha256')} for p in items],
-                'sources': evidence or {}, 'prior_reviews': ledger if synthesis else [], 'schema': Review.model_json_schema()}
+                'slides': [synthesis_slide(p) if synthesis else {k:v for k,v in p.items() if k not in ('image','sha256')} for p in items],
+                'sources': evidence or {}, 'prior_reviews': synthesis_ledger(ledger) if synthesis else [], 'schema': Review.model_json_schema()}
+            if synthesis:
+                payload['metadata_format'] = ('Each slides[].objects row follows that slide\'s object_columns. '
+                    'Prior slide_audits.checks maps all eight criteria to their validated status. '
+                    'Full per-object geometry was reviewed in the batches; inspect all attached images for deck-wide review. '
+                    'All findings and object content are retained.')
             payload['rubric_version']=rubric.VERSION
+            payload['object_id_policy'] = ('Copy object IDs literally from the supplied objects or template_context. '
+                'Their source-slide indexes are zero-based and are NOT output ordinals. Never construct IDs from a slide number. '
+                'An empty object_ids list is allowed only when no supplied object identifies the finding; provide a precise region instead.')
+            payload['review_scope'] = {
+                'total_slides': n, 'first_ordinal': expected[0], 'last_ordinal': expected[-1],
+                'visible_ordinals': expected, 'includes_opening': 1 in expected,
+                'includes_closing_position': n in expected,
+                'whole_deck_checks': synthesis,
+                'instruction': ('Evaluate completeness and sequence across the entire deck.' if synthesis else
+                    'Review only these visible slides. Other slides are reviewed separately; defer whole-deck completeness and closing-last checks to synthesis.')}
             payload['repair_acceptance_checks']=[f for f in record.get('repair_acceptance_checks',[])
                                                   if f.get('output_slide',-1)+1 in expected]
             images=[]
@@ -165,26 +284,44 @@ def run(sess, record, evidence=None):
                 if parsed.reviewed != expected: raise ValueError('Reviewer returned incomplete or reordered coverage.')
                 if any(not set(f.slides) <= set(expected) for f in parsed.findings): raise ValueError('Reviewer referenced an unseen slide.')
                 if any(not f.slides for f in parsed.findings): raise ValueError('Finding has no affected slides.')
-                for finding in parsed.findings:
+                reference_errors = []
+                for index, finding in enumerate(parsed.findings):
                     ids={o['id'] for p in items if p['ordinal'] in finding.slides
                          for o in p['objects']+p['template_context']}
                     ids.update(e['id'] for p in items if p['ordinal'] in finding.slides
                                for e in p.get('source_decision',{}).get('elements',[]))
-                    if not set(finding.object_ids)<=ids: raise ValueError('Finding has unknown affected object IDs.')
+                    unknown = set(finding.object_ids) - ids
+                    if unknown:
+                        reference_errors.append({'finding_index':index,'slides':finding.slides,
+                            'unknown_ids':sorted(unknown),'allowed_ids':sorted(ids)})
+                if reference_errors:
+                    payload['reference_errors'] = reference_errors
+                    first=reference_errors[0]
+                    raise ValueError(f"Finding {first['finding_index']} on slides {first['slides']} has unknown affected object IDs: "
+                        +', '.join(first['unknown_ids'])+'. Copy exact IDs from reference_errors.allowed_ids; do not derive them from output ordinals.')
                 if synthesis:
                     if parsed.slide_audits: raise ValueError('Synthesis must use the completed slide audits.')
                 else:
                     if [a.ordinal for a in parsed.slide_audits] != expected:
                         raise ValueError('Missing or reordered per-slide rubric audit.')
                     for audit in parsed.slide_audits:
-                        rubric.validate_checks(audit.checks,[f for f in parsed.findings if audit.ordinal in f.slides])
+                        try:
+                            rubric.validate_checks(audit.checks,[f for f in parsed.findings if audit.ordinal in f.slides])
+                        except rubric.RubricConsistencyError as exc:
+                            raise rubric.RubricConsistencyError(f'Slide {audit.ordinal}: {exc}') from exc
                 return parsed
             record['progress'] = {'stage':'output_qa_synthesis' if synthesis else 'output_qa',
                                   'reviewed_slides':len(covered), 'total_slides':n}
             for attempt in range(2):
-                result = providers.generate('output_qa', SYSTEM, payload, images=images, max_tokens=12000)
+                # A 98-slide deck can exceed the provider limit from repeated
+                # template rules alone. Share identical metadata losslessly,
+                # including on correction retries, before provider preparation.
+                request_payload = qa_payload.compact(payload, providers.role_config('output_qa')['provider'])
+                result = providers.generate('output_qa', SYSTEM, request_payload, images=images, max_tokens=12000)
                 record.setdefault('output_qa_calls',[]).append({
                     'stage':payload['stage'], 'ordinals':expected,
+                    'metadata_chars':len(providers.prompt_text(request_payload,providers.role_config('output_qa')['provider'])),
+                    'shared_metadata_entries':len(request_payload.get('shared_metadata',{})),
                     **{k:v for k,v in result.items() if k!='data'}})
                 if result['status'] != 'completed': raise ValueError(result.get('message', 'Output QA failed.'))
                 try:
@@ -193,32 +330,49 @@ def run(sess, record, evidence=None):
                 except ValueError as exc:
                     message = str(exc)[:1200] if not hasattr(exc, 'errors') else str(exc.errors(include_input=False, include_url=False))[:1200]
                     record.setdefault('output_qa_validation_errors',[]).append(message)
-                    if attempt: raise ValueError('QA response failed validation after correction: '+message)
+                    if attempt:
+                        error_type = rubric.RubricConsistencyError if isinstance(exc, rubric.RubricConsistencyError) else ValueError
+                        raise error_type('QA response failed validation after correction: '+message) from exc
                     payload['validation_error'] = message
-                    payload['correction_instruction'] = 'Repeat the complete review with valid ordered coverage and consistent rubric findings. Do not change a failed verdict to pass to satisfy validation.'
+                    payload['previous_response'] = result['data']
+                    payload['correction_instruction'] = ('Correct the supplied previous_response using the original evidence. Return the complete review, not a patch. '
+                        'For every slide, match each criterion status to findings for that SAME slide and criterion. '
+                        'Add the missing actionable finding for each observed adverse verdict; preserve existing findings and all ordered coverage. '
+                        'If reference_errors is present, correct EVERY listed object reference using its allowed_ids and the screenshots. '
+                        'Retain the finding and its evidence; do not delete a defect to fix an ID. '
+                        'Check all slides and criteria, not only the first validation error. Do not change an adverse verdict to pass merely to satisfy validation.')
             result = parsed.model_dump()
             for item in result['findings']:
                 item['category'] = rubric.channel(item['criterion'])
             return result
         covered = set()
         record['output_qa'] = {'rubric_version':rubric.VERSION, 'batches':ledger}
-        for start in range(0, n, 5):
-            batch = manifest[max(0, start-1):start+5]
-            response = review(batch)
+        def review_batch(batch):
+            try:
+                response = review(batch)
+            except rubric.RubricConsistencyError:
+                if len(batch) == 1: raise
+                # Retry only the inconsistent batch with less simultaneous audit
+                # bookkeeping. Keep validation intact and bound recovery by size.
+                midpoint = len(batch)//2
+                record.setdefault('output_qa_recoveries', []).append({
+                    'ordinals':[p['ordinal'] for p in batch], 'reason':'inconsistent_rubric',
+                    'strategy':'split_batch'})
+                review_batch(batch[:midpoint])
+                review_batch(batch[midpoint:])
+                return
             ledger.append({'request_ordinals': [p['ordinal'] for p in batch], 'response': response})
             covered.update(response['reviewed']); findings.extend(response['findings'])
             record['progress'] = {'stage':'output_qa', 'reviewed_slides':len(covered), 'total_slides':n}
+        for start in range(0, n, 5):
+            review_batch(manifest[max(0, start-1):start+5])
         # Every final screenshot is sent again for cross-deck context; no sampled-slide shortcut.
         synthesis = review(manifest, True)
         findings.extend(synthesis['findings'])
         if covered != set(range(1, n+1)): raise ValueError('Missing reviewed slides.')
         checks = {key: {'status':'passed', 'findings':[]} for key in CHECKS}
         checks['output_qa_visual'] = {'status':'passed', 'findings':[]}
-        seen = set()
-        for item in findings:
-            key = (item['criterion'], tuple(item['slides']), item['message'])
-            if key in seen: continue
-            seen.add(key)
+        for item in consolidate_findings(findings):
             category = 'output_qa_'+item['category']
             affected = [i-1 for i in item['slides']]
             finding = {'code':'OUTPUT_'+item['category'].upper(), 'message':item['message'],
@@ -226,6 +380,7 @@ def run(sess, record, evidence=None):
                        'severity': 'blocking' if item['accuracy']=='contradicted' else item['severity'],
                        'affected_slides': affected, 'accuracy': item['accuracy'],
                        **{k:item[k] for k in rubric.RepairEvidence.model_fields}}
+            if item.get('observations'): finding['observations'] = item['observations']
             if len(affected) == 1: finding['output_slide'] = affected[0]
             checks[category]['findings'].append(finding)
         for value in checks.values():
@@ -234,5 +389,5 @@ def run(sess, record, evidence=None):
         return checks
     except Exception as exc:
         return {name: {'status':'error', 'findings':[{'code':'OUTPUT_QA_INCOMPLETE', 'severity':'blocking',
-                    'message': ('Ordered output review could not complete: '+str(exc)[:500]) if type(exc) is ValueError else
+                    'message': ('Ordered output review could not complete: '+str(exc)[:500]) if isinstance(exc, ValueError) else
                                f'Ordered output review could not complete ({type(exc).__name__}). Check provider configuration, budget, and rendered coverage.'}]} for name in CHECKS+('output_qa_visual',)}

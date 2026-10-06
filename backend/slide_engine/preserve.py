@@ -14,7 +14,7 @@ from pptx.dml.color import RGBColor
 from pptx.util import Inches, Pt
 from pptx.enum.text import MSO_AUTO_SIZE
 
-from . import inventory
+from . import inventory, templates
 from . import template_policy as T
 
 
@@ -56,16 +56,16 @@ def build(src_path, out_path, template_path, revisions=None, source_decisions=No
     for sid in list(dest.slides._sldIdLst):
         dest.part.drop_rel(sid.rId)
         dest.slides._sldIdLst.remove(sid)
-    layout = next((x for x in dest.slide_layouts if x.name == B.L_TITLE_ONLY), dest.slide_layouts[6])
-    cover_layout = next(x for x in dest.slide_layouts if x.name == B.L_TITLE)
-    closing_layout = next(x for x in dest.slide_layouts if x.name == T.CLOSING_LAYOUT)
+    layout = next((x for x in templates.layouts(dest) if x.name == T.CONTENT_LAYOUT), templates.layouts(dest)[6])
+    cover_layout = next(x for x in templates.layouts(dest) if x.name == T.OPENING_LAYOUT)
+    closing_layout = next(x for x in templates.layouts(dest) if x.name == T.CLOSING_LAYOUT)
     # Closing example copy is replaced by native source/authorized closing text.
     for shape in list(closing_layout.shapes):
         if shape.has_text_frame and shape.text.strip():shape._element.getparent().remove(shape._element)
-    section_layout = next(x for x in dest.slide_layouts if x.name == 'Section Header')
+    section_layout = next(x for x in templates.layouts(dest) if x.name == T.SECTION_LAYOUT)
     # Hide only the content master's furniture. Keep the section layout's own
     # photo and top-right logo; do not mutate the shared master or cover layout.
-    section_layout._element.set('showMasterSp','0')
+    if templates.current_id()=='stevens': section_layout._element.set('showMasterSp','0')
     plans, mapping, corrections = [], {}, []
     for idx, slide in enumerate(source.slides):
         objects = list(inventory.source_objects(slide))
@@ -161,7 +161,7 @@ def build(src_path, out_path, template_path, revisions=None, source_decisions=No
                 import_part(rel.target_part)
         return part
 
-    def copy_relationships(element, old_part, new_part):
+    def copy_relationships(element, old_part, new_part, replacements=None):
         for node in element.iter():
             for key, rid in list(node.attrib.items()):
                 if key.startswith('{' + inventory.R + '}'):
@@ -172,7 +172,7 @@ def build(src_path, out_path, template_path, revisions=None, source_decisions=No
                         target_idx = source_slide_numbers[rel.target_part]
                         target = slides[mapping[str(target_idx)][0]].part
                     else:
-                        target = import_part(rel.target_part)
+                        target = import_part((replacements or {}).get(rel.target_part, rel.target_part))
                     node.set(key, new_part.relate_to(target, rel.reltype, rel.is_external))
 
     # Import unchanged slides with their original layout, master, theme and notes.
@@ -209,7 +209,17 @@ def build(src_path, out_path, template_path, revisions=None, source_decisions=No
         left=min([0]+[r[0] for r in rects]); top=min([0]+[r[1] for r in rects])
         right=max([source.slide_width]+[r[0]+r[2] for r in rects])
         bottom=max([source.slide_height]+[r[1]+r[3] for r in rects])
+        pdf_source = src_slide._element.cSld.get('name') == 'sss:pdf-import'
+        if pdf_source and not cover and rects:
+            # A PDF's old canvas margins are not content. Fit the surviving
+            # content bounds so template furniture does not shrink it twice.
+            left=min(r[0] for r in rects); top=min(r[1] for r in rects)
+            right=max(r[0]+r[2] for r in rects); bottom=max(r[1]+r[3] for r in rects)
         scale = min(rw/(right-left),rh/(bottom-top))
+        if pdf_source and not cover:
+            sizes=[r.font.size.pt for _,s in objects.values() if s.has_text_frame
+                   for p in s.text_frame.paragraphs for r in p.runs if r.font.size]
+            if sizes: scale=min(scale,40/max(sizes))
         dx = rx+(rw-(right-left)*scale)/2-left*scale
         dy = ry+(rh-(bottom-top)*scale)/2-top*scale
         # A source slide background is not a source shape. Preserve its contrast
@@ -253,8 +263,13 @@ def build(src_path, out_path, template_path, revisions=None, source_decisions=No
                               if e['id']==placement['source_id']),{})
             is_logo=source_role.get('role')=='logo' or source_role.get('contains_logo',False)
             is_code=source_role.get('role')=='code'
+            from .chart_theme import preserved_part
+            chart_parts = {}
+            for _, child in inventory.walk_shapes([original]):
+                if child.has_chart:
+                    chart_parts[child.chart.part] = preserved_part(child)
             element = deepcopy(original._element)
-            copy_relationships(element, part, dst_slide.part)
+            copy_relationships(element, part, dst_slide.part, chart_parts)
             # Remove placeholder binding to an unrelated destination layout.
             for ph in element.xpath('.//p:ph'):
                 ph.getparent().remove(ph)
@@ -321,6 +336,9 @@ def build(src_path, out_path, template_path, revisions=None, source_decisions=No
                 for row in table.rows:
                     row.height = int(Inches(4.85)/len(table.rows))
             placement['bounds'] = [shape.left,shape.top,shape.width,shape.height]
+            if shape.has_table:
+                from .table_geometry import resize
+                resize(shape, shape.width, shape.height)
             prefix = 'sss-repeat:' if placement['structural_repeat'] else 'sss:'
             set_marker(shape, prefix + placement['source_id'] + ('|logo' if is_logo else '|code' if is_code else '|title' if is_title else ''))
             # Standardize text without collapsing runs or touching source emphasis.
@@ -367,6 +385,12 @@ def build(src_path, out_path, template_path, revisions=None, source_decisions=No
                                         r.font.color.rgb = RGBColor.from_string(B.INK)
                                 except (AttributeError, TypeError):
                                     pass
+            if extracted_role and is_title and shape.has_text_frame:
+                from app.authoring.text_fit import fit_cover_title
+                fit_cover_title(shape)
+        if pdf_source and not cover:
+            from .pdf_text_fit import enlarge_small_text
+            enlarge_small_text(dst_slide, plan['placements'], region)
         for origin, element in cloned:
             for connection in element.xpath('.//a:stCxn | .//a:endCxn'):
                 key = (origin, connection.get('id'))

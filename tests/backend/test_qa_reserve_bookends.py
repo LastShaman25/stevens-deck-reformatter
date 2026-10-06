@@ -81,7 +81,8 @@ def test_redesign_review_continues_after_one_slide_response_errors(ai_session, m
     assert len(reviewed)>=len(Presentation(ai_session.source_path).slides)
     assert record['checks']['ai_visual_review']['status']=='error'
     assert record['checks']['output_qa_coverage']['status']=='passed'
-    assert not generations.download_allowed(record)
+    assert generations.download_allowed(record)
+    assert not generations.checks_satisfied(record)
 
 
 def test_qa_retries_invalid_coverage_and_keeps_partial_ledger(tmp_path, monkeypatch):
@@ -113,7 +114,8 @@ def test_ordered_qa_runs_when_earlier_visual_agent_errors(ai_session, monkeypatc
     monkeypatch.setattr(output_qa,'run',lambda *a: (calls.append(True) or {n:{'status':'passed','findings':[]} for n in output_qa.CHECKS+('output_qa_visual',)}))
     record=generations.build(ai_session,mode='ai',repair_passes=0)
     assert calls and record['checks']['output_qa_visual']['status']=='passed'
-    assert not generations.download_allowed(record)
+    assert generations.download_allowed(record)
+    assert not generations.checks_satisfied(record)
 
 
 def test_bookends_are_approved_and_native_layouts_are_audited(tmp_path):

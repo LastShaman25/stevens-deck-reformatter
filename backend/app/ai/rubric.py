@@ -342,6 +342,10 @@ def finding_status(findings):
     return 'failed' if 'blocking' in severities else 'needs_review' if any(s!='warning' for s in severities) else 'passed'
 
 
+class RubricConsistencyError(ValueError):
+    """A complete audit has statuses that contradict its finding list."""
+
+
 def validate_checks(checks, findings):
     keys = [c.criterion for c in checks]
     if len(keys) != len(CRITERIA) or set(keys) != set(CRITERIA):
@@ -352,9 +356,9 @@ def validate_checks(checks, findings):
                     'review' if any(f.severity == 'review' for f in owned) else 'warning' if owned else None)
         actual = next(c.status for c in checks if c.criterion == criterion)
         if expected and actual != expected:
-            raise ValueError('Criterion status does not match its own findings.')
+            raise RubricConsistencyError(f'Criterion {criterion}: status {actual} does not match its own findings (expected {expected}).')
         if not expected and actual not in ('passed', 'not_applicable'):
-            raise ValueError('Adverse rubric verdict lacks a finding in that criterion.')
+            raise RubricConsistencyError(f'Criterion {criterion}: adverse status {actual} lacks a finding in that criterion.')
 
 
 GENERATOR += "\n" + TEMPLATE_ROLE_RULE

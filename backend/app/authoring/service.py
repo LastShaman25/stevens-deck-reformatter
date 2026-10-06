@@ -1,4 +1,6 @@
 """Topic/PDF -> approved outline -> native slides -> independent release gates."""
+from slide_engine import templates
+from .. import activity
 import hashlib
 import json
 import time
@@ -43,12 +45,14 @@ def call(sess, role, instruction, data, schema, images=(), validate=None):
 
 def create(body):
     sess = sessions.create()
+    sess.template_id = body.template_id
     sess.workflow = 'author'
     sess.original_name = 'New presentation'
     sess.source_path = str(Path(sess.dir, 'source.json'))
     Path(sess.source_path).write_text(body.model_dump_json(), encoding='utf-8')
     sess.creation = {'request':body.model_dump(), 'pages':[], 'outline':None, 'revision':0,
                      'approved_hash':None, 'deck':None, 'status':'input', 'error':None}
+    activity.emit('workflow','job_created','created',sess)
     return sess
 
 
@@ -57,6 +61,7 @@ class Extraction(BaseModel):
     uncertainty: str = Field(max_length=2000)
 
 
+@activity.operation('importer','import_pdf')
 def ingest_pdf(sess, data):
     if not data.startswith(b'%PDF-') or len(data) > 50*1024*1024:
         raise ValueError('Upload a valid PDF of at most 50 MB.')
@@ -98,6 +103,7 @@ def source_evidence(sess):
             'outline':sess.creation['outline'], 'user_visual_overrides':sess.creation.get('user_visual_overrides',[])}
 
 
+@activity.operation('planner','plan_outline')
 def plan(sess):
     req = sess.creation['request']
     if req['source'] == 'pdf' and not sess.creation['pages']: raise ValueError('Upload a PDF before planning.')
@@ -168,11 +174,11 @@ def with_bookends(outline):
     if not any(s.kind == 'opening' for s in slides):
         slides.insert(0, OutlineSlide(id=unique_id('opening'), kind='opening',
             title=outline.title, points=['Introduction and purpose'], visual=VisualPlan(kind='text_only',
-            description='Title on the mostly red Stevens opening.', reason='Use the approved template artwork.')))
+            description='Title on the selected '+templates.current_id()+' opening.', reason='Use the approved template artwork.')))
     if not any(s.kind == 'closing' for s in slides):
         slides.append(OutlineSlide(id=unique_id('closing'), kind='closing',
             title='Thank you', points=['Questions and discussion'], visual=VisualPlan(kind='text_only',
-            description='Thank you on the statue-photo Stevens closing.', reason='Use the approved template artwork.')))
+            description='Thank you on the selected '+templates.current_id()+' closing.', reason='Use the approved template artwork.')))
     slides=[s.model_copy(update={'title':'Thank you!'}) if s.kind=='closing' else s for s in slides]
     return Outline(title=outline.title, rationale=outline.rationale, slides=slides)
 
@@ -235,6 +241,7 @@ def validate_citations(sess, deck):
     return {'status':'failed' if any(f['severity']=='blocking' for f in findings) else 'needs_review' if findings else 'passed', 'findings':findings}
 
 
+@activity.operation('author','generate_deck')
 def generate(sess, supplied_deck=None, repair_remaining=1, content_edit=False):
     c = sess.creation
     if not c['outline'] or c['approved_hash'] != hash_json(c['outline']): raise ValueError('Approve the current outline before generating.')
@@ -292,14 +299,15 @@ or invites questions. Keep content suitable for the specified audience.''',
     directory = Path(sess.dir, 'generations', gid); directory.mkdir(parents=True)
     candidate = directory/'candidate.pptx'
     record = {'schema_version':2, 'generation_id':gid, 'directory':str(directory), 'candidate':str(candidate),
-        'source_sha256':sha256(sess.source_path), 'candidate_sha256':None, 'template_sha256':sha256(grounded.TEMPLATE_PATH),
+        'source_sha256':sha256(sess.source_path), 'candidate_sha256':None, 'template_sha256':sha256(templates.path()),'template_id':getattr(sess,'template_id','stevens'),
         'revision_version':sess.revision_version, 'policy_version':generations.POLICY_VERSION, 'mode':'author',
         'state':'checking', 'checks':{}, 'findings':[], 'human_decisions':[], 'optional_ai':{}, 'ai_pipeline':None,
         'source_to_output_slides':{str(i):[i] for i in range(len(deck.slides))}, 'report':{'slide_count':len(deck.slides), 'corrections':[]},
         'outline_hash':c['approved_hash'], 'content_hash':hash_json(c['deck']), 'progress':{'stage':'composing'}}
     sess.generation = record
     try:
-        manifest = composer.compose(deck, candidate, directory/'assets', c['pages'], kinds=[s.kind for s in outline.slides])
+        with activity.stage('composer','compose_slides',sess):
+            manifest = composer.compose(deck, candidate, directory/'assets', c['pages'], kinds=[s.kind for s in outline.slides])
         record['content_manifest'] = manifest
         record['candidate_sha256'] = sha256(candidate)
         generations.add_check(record, 'plan_coverage', {'status':'passed', 'findings':[]})
@@ -307,7 +315,8 @@ or invites questions. Keep content suitable for the specified audience.''',
         generations.add_check(record, 'content_grounding', validate_citations(sess, deck))
         generations.add_check(record, 'structural_formatting', generations.structural(candidate))
         record['progress'] = {'stage':'rendering'}
-        generations.add_check(record, 'render_verification', render_verify.check(candidate, directory/'render'))
+        with activity.stage('renderer','render_slides',sess):
+            generations.add_check(record, 'render_verification', render_verify.check(candidate, directory/'render'))
         for name, result in output_qa.run(sess, record, source_evidence(sess)).items(): generations.add_check(record, name, result)
     except Exception as exc:
         generations.add_check(record, 'build', {'status':'error', 'findings':[{'code':'AUTHORING_FAILED', 'severity':'blocking',
@@ -342,5 +351,8 @@ the existing visual type and its evidence; repair its layout, labels or presenta
         sess.generation['repair_history'] = [{'generation_id':gid,'findings':repairable}]
         generations.save(sess.generation)
         return outcome
+    record['processing_complete']=True
+    record['progress']={'stage':'finished'}
+    generations.save(record)
     c['status'] = 'review'; sess.progress = {'stage':'review'}; persist(sess)
     return public(sess)

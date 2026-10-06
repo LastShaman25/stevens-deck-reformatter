@@ -71,7 +71,7 @@ def _plan_deck(deck, use_llm=True, source=""):
             pass
     return out, used
 
-TEMPLATE_PATH = os.path.join(_BACKEND, "assets", "ppt_template.pptx")
+TEMPLATE_PATH = os.path.join(_BACKEND, "assets", "stevens_template.pptx")
 EMU = brand.EMU_PER_INCH
 
 
@@ -559,11 +559,13 @@ def _legacy_build_deck(src_path, out_path, template_path=TEMPLATE_PATH,
     }
 
 
-def build_deck(src_path, out_path, template_path=TEMPLATE_PATH,
+def build_deck(src_path, out_path, template_path=None,
                orig_pdf=None, use_vision=False, revisions=None, use_llm=False,source_decisions=None,require_closing=False):
     """Build an explicitly inventoried native candidate; release requires QA."""
     from slide_engine.preserve import build as preserve_build
     from slide_engine.repair import repair
+    from slide_engine import templates
+    template_path=template_path or templates.path()
     report = preserve_build(src_path, out_path, template_path, revisions,source_decisions)
     report=repair(src_path, out_path, report)
     if require_closing:

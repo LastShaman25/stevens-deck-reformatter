@@ -56,6 +56,9 @@ def database():
       role TEXT NOT NULL, expires REAL NOT NULL);
     CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS codes (token TEXT PRIMARY KEY, user_id TEXT REFERENCES users(id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS activity_events (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      job_id TEXT, stamp REAL NOT NULL, event TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS activity_stamp ON activity_events(stamp);
     PRAGMA user_version=1;
     ''')
     try:
@@ -203,7 +206,7 @@ def code_login(request: Request, body: CodeLogin):
 
 class CodeCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
-    role: Literal['member', 'admin'] = 'member'
+    role: Literal['member', 'developer', 'admin'] = 'member'
 
 
 @router.post('/api/admin/codes')
@@ -287,11 +290,11 @@ def admin(request):
 
 class Invite(BaseModel):
     email: str = Field(min_length=3, max_length=254, pattern=r'^[^\s@]+@[^\s@]+\.[^\s@]+$')
-    role: Literal['member', 'admin'] = 'member'
+    role: Literal['member', 'developer', 'admin'] = 'member'
 
 
 class AccountUpdate(BaseModel):
-    role: Literal['member', 'admin']
+    role: Literal['member', 'developer', 'admin']
     active: bool
 
 

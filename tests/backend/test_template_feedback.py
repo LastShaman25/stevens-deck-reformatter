@@ -183,7 +183,7 @@ def test_rejected_render_feedback_is_retried_without_releasing_it(ai_session,mon
     assert any(f.get('from_check')=='rejected_repair' and 'collision' in f['message'] for f in planned[1])
     assert not record['output_qa_repairs'][0]['accepted']
     if always_reject:
-        assert not generations.download_allowed(record)
+        assert not generations.checks_satisfied(record)
         assert len(final_reviews)==1
         assert record['candidate_sha256']==record['output_qa_repairs'][0]['before_sha256']
     else:

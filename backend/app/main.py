@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .api import router
 from . import sessions
-from . import auth
+from . import auth, activity
 from .authoring.api import router as authoring_router
 from starlette.middleware.sessions import SessionMiddleware
 from contextlib import asynccontextmanager
@@ -58,6 +58,7 @@ app.add_middleware(
 
 app.include_router(router)
 app.include_router(auth.router)
+app.include_router(activity.router)
 app.include_router(authoring_router)
 app.middleware('http')(auth.guard)
 app.add_middleware(SessionMiddleware, secret_key=auth.cookie_secret(), session_cookie='stevens_oidc',

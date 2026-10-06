@@ -14,7 +14,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 from pptx.oxml.ns import qn
 
-TEMPLATE = Path(__file__).resolve().parents[1] / 'assets' / 'ppt_template.pptx'
+TEMPLATE = Path(__file__).resolve().parents[1] / 'assets' / 'stevens_template.pptx'
 APPROVED_REGIONS = {'ppt/media/image2.png':(805,40,975,340),
                     'ppt/media/image4.png':(800,40,975,355),
                     'ppt/media/image7.png':(800,40,975,355),
@@ -151,6 +151,9 @@ auditing an exported slide, also verify its inherited artwork against the bundle
 """
     from pptx import Presentation
     from . import inventory, template_policy as T
+    from . import templates
+    if templates.current_id()=='cpe':
+        raise ValueError('CPE logo reuse is not verified; use source_crop or retain the original logo.')
     source=_features(Image.open(BytesIO(crop_blob)))
     p=Presentation(TEMPLATE)
     wanted = actual_slide.slide_layout.name if actual_slide is not None else T.OPENING_LAYOUT if cover else 'Title Only'

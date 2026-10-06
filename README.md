@@ -1,8 +1,10 @@
 # Stevens Slide Studio
 
-A local FastAPI + React application that uses AI to redesign supported PowerPoint objects on the shipped Stevens template, then verifies content and rendered output before offering a final download. New presentations can also be authored from a topic, outline, or PDF. Final release requires ordered AI output QA in every workflow; offline runs cannot release downloadable output.
+A local FastAPI + React application that applies the selected CPE or Stevens template locally, then runs structural, content and ordered AI output QA. New presentations can also be authored from a topic, outline, or PDF using AI. Completed artifacts are downloadable even when QA reports findings or failures; the original QA verdict remains visible.
 
-Sign in → choose Use my PowerPoint or Generate a new presentation → review/approve → generate and verify → inspect findings → download and finish. All downloads remain blocked until required QA completes and findings are resolved. There is no draft-download bypass.
+Choose a format before uploading or planning a new deck. The bundled sources are `backend/assets/CPE_template.potx` and `backend/assets/stevens_template.pptx`. Each job keeps its own template selection, layout geometry, AI references and release fingerprint. The POTX is converted to a presentation package in a local cache without modifying its source artwork.
+
+Sign in → choose Use my PowerPoint or Generate a new presentation → review/approve → generate and verify → inspect findings → download and finish. Downloads require completed processing and an unchanged artifact. Findings need review but do not block downloading. Authentication, ownership, freshness and identity checks apply to every download, including legacy draft requests.
 
 ## Project layout
 
@@ -15,13 +17,15 @@ docs/          Architecture and verification checkpoints
 .github/       Continuous integration
 ```
 
+Current reconciled decisions and provenance: [handover](docs/HANDOVER.md). Developer permissions and activity: [developer activity](docs/DEVELOPER_ACTIVITY.md).
+
 See [architecture](docs/ARCHITECTURE.md) and [verification checkpoints](docs/VERIFICATION.md). Private decks, past evidence and retained implementation history live in the ignored `.local/` folder. They are not required to run the app.
 
 Current implementation results and limits: [implementation verification](docs/IMPLEMENTATION_VERIFICATION.md). Run the complete local verification with `powershell -NoProfile -File tools/verify.ps1`. After building, `powershell -NoProfile -File tools/start.ps1` starts the application in the background using the project's local API credential.
 
 ## Windows setup
 
-Tested with Python 3.12 and Node 22. Vite 8 requires a supported recent Node version (22.12 or later on the Node 22 line). Install LibreOffice, or use an installed Windows Microsoft PowerPoint. Actual rendering is required for verified final downloads. Arial must be available; substitutions are reported.
+Tested with Python 3.12 and Node 22. Vite 8 requires a supported recent Node version (22.12 or later on the Node 22 line). Install LibreOffice, or use an installed Windows Microsoft PowerPoint. Rendering is required for previews and PDF exports. The Windows launcher selects the portable LibreOffice installation under `.local/tools/libreoffice` when present. Arial must be available; substitutions are reported.
 
 Run from the repository root in PowerShell:
 
@@ -41,45 +45,48 @@ Development policy: do not introduce spending, cumulative request, or cumulative
 
 Each generation has a unique directory, source/candidate/template hashes, revision version, policy version, check results, and scoped review decisions. Four required checks cover the placement plan, reopened exported content, structural formatting, and fresh PDF/PNG rendering. AI mode additionally requires a valid AI redesign and a completed visual review of every output slide. A separate output-QA agent reviews every output screenshot in presentation order, followed by deck-wide sequence and source-based accuracy review. Final download rechecks identity and returns the exact checked bytes. Permanent benchmark capture is disabled.
 
-Missing content, unsupported required objects, failed checks, or changed files block final release. Uncertain formatting, chart appearance, inherited table styles, and text visibly extending beyond its intended box require inspection. A reviewer can resolve specific review findings with a rationale; required failures cannot be waived. Optional AI failures are never a clean result.
+QA failures, missing checks, content warnings and uncertain formatting remain visible for inspection. Completed artifacts can be downloaded without accepting those findings. Missing artifacts, unfinished processing, changed files and stale revisions still block downloads. Human decisions record acceptance without rewriting the QA verdict.
 
 ## Supported behavior and limits
 
 - Native text, images/crops, tables (including merges), groups, connectors, standard editable charts and workbook dependencies, speaker notes, and external/internal hyperlinks are preserved and independently checked. Column, line, and pie charts have regression fixtures.
 - Source runs retain emphasis; supported inherited properties and source theme colors are materialized. Arial, title size, minimum body size, and approved red/neutral text rules are applied. The current builder favors native preservation over reconstructing arbitrary diagrams.
 - A single text body can split at paragraph boundaries. A table with its title can split at row boundaries with a repeated header, provided no vertical merge crosses the split. Notes remain on the first output slide; internal links target the first mapped output slide.
+- Native charts retain their effective source theme, including default series colors; the content audit checks that theme as well as chart data. Table resizing updates row heights and column widths together with the frame. Generated opening/closing body text is measured to fit its template region at 16–20 pt; text that cannot fit readably is rejected rather than truncated.
 - Preservation reflow is bounded to three measured attempts and rolls back regressions. AI mode adds model-proposed geometry, font sizing, and approved text colors, followed by mandatory final-QA repair cycles while the candidate improves and upload budget/time remain. The legacy zero-to-two initial repair setting cannot disable final QA. Free-text notes guide AI layout/style decisions; the model cannot rewrite source wording, add/remove objects, alter chart data, or change links/notes. Arbitrary mixed-layout and single-paragraph overflow are not guaranteed to be solved.
 - Source artwork and institutional logos are retained conservatively, which can duplicate template decoration. Complex layouts, chart typography, color semantics, gradients, table-style inheritance, and overlapping objects may require manual review. This is not full accessibility certification or a promise that arbitrary decks need no manual layout work.
 - SmartArt, OLE/embedded objects, media, animations, unsupported graphic frames, and image slide backgrounds are explicitly blocked. Generated slide-number fields have a narrow, recorded template-policy exclusion; ordinary dates, citations, footnotes, and repeated text do not.
 
 ## AI setup and retention
 
-Create `backend/.env` from `.env.example` if it does not exist. Enter `AI_GATEWAY_API_KEY` locally; never paste credentials into the application or commit the file. The recommended configuration uses **GPT-6 Luna for redesign**, and **Claude Opus 5.5 for generation and QA**, through Vercel AI Gateway:
+Create `backend/.env` from `.env.example` if it does not exist. Enter `OPENAI_API_KEY` locally; never paste credentials into the application or commit the file. The current configuration uses **GPT-6 Luna through the direct OpenAI API for redesign, generation, and QA**:
 
 ```dotenv
-AI_GATEWAY_API_KEY=
-STEVENS_AI_PROVIDER=vercel
-STEVENS_AI_REDESIGNER_MODEL=openai/gpt-6-luna
-STEVENS_AI_GENERATOR_MODEL=anthropic/claude-opus-5.5
-STEVENS_AI_REVIEWER_MODEL=anthropic/claude-opus-5.5
-AI_GATEWAY_REDESIGN_REASONING_EFFORT=low
-AI_GATEWAY_GENERATOR_REASONING_EFFORT=low
-AI_GATEWAY_REVIEW_REASONING_EFFORT=low
+OPENAI_API_KEY=
+STEVENS_AI_PROVIDER=openai
+STEVENS_AI_REDESIGNER=openai
+STEVENS_AI_GENERATOR=openai
+STEVENS_AI_REVIEWER=openai
+STEVENS_AI_REDESIGNER_MODEL=gpt-6-luna
+STEVENS_AI_GENERATOR_MODEL=gpt-6-luna
+STEVENS_AI_REVIEWER_MODEL=gpt-6-luna
+OPENAI_REASONING_EFFORT=none
+OPENAI_REVIEW_REASONING_EFFORT=low
 ```
 
-Remove legacy `STEVENS_AI_PLANNER` overrides when switching. Set workflow provider overrides (`STEVENS_AI_REDESIGNER`, `STEVENS_AI_GENERATOR`, `STEVENS_AI_REVIEWER`) to `vercel`, or leave them unset to inherit the shared provider. Models can be changed without code; workflow model settings override legacy planner settings and the shared `STEVENS_AI_MODEL`. Generation covers extraction, outlines, visual planning, authoring and authoring repairs; redesign covers source decisions, layout and redesign repairs. Nonempty process environment settings override matching `.env` entries. **Refresh AI configuration** shows all three assignments; **Test AI connection** tests each role. See [Gateway configuration, model comparison and deployment notes](docs/AI_GATEWAY.md).
+Keep workflow provider overrides (`STEVENS_AI_REDESIGNER`, `STEVENS_AI_GENERATOR`, `STEVENS_AI_REVIEWER`) set to `openai`; these override the shared provider and legacy planner settings. Models can be changed without code; workflow model settings override legacy planner settings and the shared `STEVENS_AI_MODEL`. Generation covers extraction, outlines, visual planning, authoring and authoring repairs; redesign covers source decisions, layout and redesign repairs. Nonempty process environment settings override matching `.env` entries. **Refresh AI configuration** shows all three assignments; **Test AI connection** tests each role. Alternative deployment settings are documented in [Gateway configuration](docs/AI_GATEWAY.md).
 
-One Gateway key supplies both models in separate calls. Redesign uses OpenAI while generation and QA use Anthropic. Generation and its QA use separate calls to the same model family. The direct OpenAI, Anthropic and Gemini adapters remain available. Supported provider choices are `vercel`, `openai`, `anthropic`, `gemini`, and explicit `auto` (which prefers a configured Gateway key). Requests use strict JSON schemas, high-detail slide images and bounded timeouts/tokens. API failures, refusals and incomplete responses block verification; the app never silently switches models after an error.
+All current workflows use the local OpenAI key, with separate calls for authoring and review; no Vercel Gateway is used. Other provider adapters remain available for a future explicit configuration change. Avoid `auto` for an OpenAI-only deployment because it can select another configured provider. Requests use strict JSON schemas, high-detail slide images and bounded timeouts/tokens. API failures, refusals and incomplete responses block verification; the app never silently switches models after an error.
 
 Select **Generate and verify**. This sends slide text, layout instructions, original previews when available, and generated slide images to the displayed providers. Invalid responses, quota/authentication failures, missing required checks, and content damage block AI verification. Repairs are accepted only when the combined checks improve without increasing deterministic blocking defects. Source words, emphasis, editable objects, charts, links, and notes are independently checked after edits. Visual AI judgment can still be wrong; unresolved review findings need inspection.
 
-Uploaded presentations have one workflow: **Redesign + QA**. Every generation runs AI redesign and mandatory visual/output QA; there is no mode selector or optional per-slide QA checkbox. The public generation API defaults to `ai` and rejects `preserve`. Cumulative AI request/token limits default to unlimited (`STEVENS_AI_MAX_CALLS=0`, `STEVENS_AI_MAX_TOKENS=0`). A deployment can explicitly set positive caps; no implicit two-million-token or 160-request ceiling remains. Per-request timeouts/output bounds, execution deadlines and bounded retry/non-improving repair rules still apply. There is no automatic model escalation or benchmark learning. `STEVENS_OFFLINE=1` disables providers. Offline or unavailable providers block verified release. Native preservation remains an internal composition and testing component. The old atom-reconstruction Claude planner is not used by the new native-object AI pipeline.
+Uploaded presentations default to **Format + QA**: native template composition followed by ordered AI output review. The public generation API defaults to `preserve`; explicit `ai` requests retain the redesign workflow. Idea/PDF authoring still uses AI. Cumulative request/token limits are zero/unlimited in the local launcher; per-request timeouts and bounded retries remain. Missing provider access produces visible QA errors, while completed local artifacts remain downloadable. No automatic provider switching occurs.
 
 After generation, review navigation follows every output slide in order, including each split part and the added closing. Split parts share their source preview and revision instructions. Added slides show a no-original placeholder; findings follow the selected output. Before generation, navigation follows source slides.
 
 Processing workspaces expire after one hour without meaningful user activity and at an absolute four-hour deadline. Polling does not keep files alive. Finish/cancel/logout and account deactivation revoke access and request deletion; active operations hold file leases until their bounded work returns. Failed filesystem deletions remain pending and are retried. Startup reconciles orphaned workspaces, respecting another live process's ownership. Account metadata stays outside the repository by default, separately from temporary presentation content. The renderer uses job-scoped temporary directories; operating-system/Office recovery caches are outside the application's deletion guarantee. No application timer can erase a powered-off machine's disk.
 
-**Download and finish** retrieves the bytes before asking the server to delete the job. Interrupted verified downloads have a ten-minute retry window within the absolute deadline. Downloads retained on the user's device are not deleted. `store=false` does not establish zero provider-side retention; see OpenAI's data controls. Explicit verification-tool evidence is synthetic development material in ignored `.local/verification`, not product retention.
+**Download and finish** retrieves the bytes before asking the server to delete the job. Interrupted downloads have a ten-minute retry window within the absolute deadline. Downloads retained on the user's device are not deleted. `store=false` does not establish zero provider-side retention; see OpenAI's data controls. Explicit verification-tool evidence is synthetic development material in ignored `.local/verification`, not product retention.
 
 ## Accounts and new-deck generation
 
@@ -93,7 +100,7 @@ After login:
 - **Generate a new presentation** accepts a topic/outline or PDF, audience, and **Auto / Brief / Standard / Detailed** length selection. The planner chooses the count, up to the current 30-slide resource ceiling. Users can edit/reorder/add/remove outline slides and must approve before generation.
 - Creation composes native text, editable supported charts/tables, speaker notes, function/scientific plots, and rendered mathematical expressions. Plot expressions use an allowlisted mathematical parser; model-produced Python is never executed. Equations use Matplotlib mathtext, with unsupported syntax rejected. Plots/equations are high-resolution image objects with their source specifications preserved in notes, not native editable Office equations.
 - PDF input supports text-layer and scanned documents using local extraction and bounded vision transcription. Original page references and exact source quotations are checked. PDF source figures currently use rendered source pages; specialized figure-only cropping remains a future improvement.
-- Content/chart/formula edits create a new candidate and rerun all gates. A bounded visual repair pass can address QA findings; unresolved problems stay visible and cannot falsely enable verified download. Changes to the outline require fresh approval.
+- Content/chart/formula edits create a new candidate and rerun all gates. A bounded visual repair pass can address QA findings; unresolved problems stay visible even when the completed artifact is downloadable. Changes to the outline require fresh approval.
 - Generated pictures are disabled for this release. Charts, plots, equations, native tables and source-page illustrations do not need an image-generation model.
 
 Limits: one PDF per job, 50 MB, 100 pages, 220,000 extracted characters, bounded per-page text and job budgets. New authoring is designed around one major visual per slide. Use one server worker; job state is process-local and not resumed after a restart. Structural checks and the QA agent are evidence, not guarantees of factual truth. Unsupported claims remain review findings; existing source content is not silently fact-corrected.
@@ -132,7 +139,7 @@ Additional explicit live checks (synthetic content only):
 .venv/Scripts/python.exe tools/verify_output_qa.py --live --output .local/verification/qa-challenge-new
 ```
 
-Authoring exit 0 means all required checks completed without blocking defects; a `needs_review` result still requires explicit review before download. The QA challenge must detect an intentionally incorrect number and slide sequence. These commands never automatically approve human findings and verify removal of their application workspace. Their selected synthetic evidence remains in the requested development output folder.
+Authoring exit 0 means all required checks completed without blocking defects; a `needs_review` result remains visible for inspection, while completed artifacts are downloadable. The QA challenge must detect an intentionally incorrect number and slide sequence. These commands never automatically approve human findings and verify removal of their application workspace. Their selected synthetic evidence remains in the requested development output folder.
 
 ## Code map
 
@@ -158,14 +165,14 @@ The repository uses the `main` branch. Configure your own `origin` remote before
 
 ### PDF redesign and export
 
-Use **Use my PowerPoint or PDF** for content-preserving redesign. Text-based PDFs (up to 100 pages and 60 MB upload size) become editable text plus source graphic regions; plots and equations retain their visual content. Rasterized graphics are not editable chart data. Scanned pages require OCR first; interactive forms and annotations must be flattened. Original page screenshots are used for paired QA. Verified PowerPoint and PDF downloads share the same release gate. Either verified download finishes the session. Draft downloads are disabled; legacy `draft=true` requests enforce the identical release gate.
+Use **Use my PowerPoint or PDF** for content-preserving redesign. Text-based PDFs (up to 100 pages and 60 MB upload size) become editable text plus source graphic regions; plots and equations retain their visual content. Rasterized graphics are not editable chart data. Scanned pages require OCR first; interactive forms and annotations must be flattened. Original page screenshots are used for paired QA. PowerPoint and PDF downloads share completion, ownership and identity checks. Either download finishes the session. The UI has no draft bypass; legacy `draft=true` requests enforce the identical checks.
 
-AI transport failures and malformed response JSON retry once, with a configurable `STEVENS_AI_REQUEST_TIMEOUT` (default 180 seconds, maximum 300). Existing call/token limits apply cumulatively to the upload, including retries and output QA. The UI reports these totals. Ordered output QA runs independently of earlier planner or visual-agent errors whenever its candidate/render validation succeeds. Rejected work remains blocked until every mandatory check completes and all material findings are resolved or explicitly accepted by a human. Request and token reserves protect ordered QA from earlier stages; admission estimates include input, images and output allowance without increasing an explicitly configured upload cap. Cumulative token and request limits default to unlimited for both redesign and generation; positive environment values opt into caps. Provider limits, exhausted budgets and incomplete rendering still block release. QA activity shows reviewed slides, request count and any incomplete-review reason. Validated source decisions are cached only in the temporary processing session and invalidated by source, instructions, model configuration, policy or repair feedback.
+AI transport failures and malformed response JSON retry once, with a configurable `STEVENS_AI_REQUEST_TIMEOUT` (default 180 seconds, maximum 300). Existing call/token limits apply cumulatively to the upload, including retries and output QA. The UI reports these totals. Ordered output QA runs independently of earlier planner or visual-agent errors whenever its candidate/render validation succeeds. Rejected repairs retain the previous candidate and visible findings; completed artifacts remain downloadable. Request and token reserves protect ordered QA from earlier stages; admission estimates include input, images and output allowance without increasing an explicitly configured upload cap. Cumulative token and request limits default to unlimited for both redesign and generation; positive environment values opt into caps. Provider limits and incomplete rendering remain visible as QA failures; a PDF export requires an intact render. QA activity shows reviewed slides, request count and any incomplete-review reason. Validated source decisions are cached only in the temporary processing session and invalidated by source, instructions, model configuration, policy or repair feedback.
 
 Run `python tools/verify_pdf_redesign.py --live --output .local/verification/pdf-live-new` for an opt-in synthetic PDF -> AI redesign -> PowerPoint render -> full QA check; it incurs configured API usage and never reads private course files.
 
 
-Mandatory redesign QA must finish. Completed visual/output QA findings can be accepted after human review with a nonempty reason. The decision is bound to the generation and candidate hash, remains auditable, and does not rewrite the AI verdict. All material findings must be resolved or accepted before download; missing QA, API errors, failed render/artifact checks, and changed files cannot be waived. Targeted repair repeats with a new full QA run while results improve and upload budget/time remain; unresolved or stalled work stays blocked. Initial PDF composition preserves font proportions instead of forcing a minimum size into unchanged line boxes. The native first-page layout and extracted title are independently checked.
+Completed visual/output QA findings can be accepted after human review with a nonempty reason. Decisions are bound to the generation and candidate hash and do not rewrite the AI verdict. QA is advisory for downloading; completion, ownership and file identity remain enforced. Explicit AI redesign may attempt targeted repairs, while the default local workflow does not enter the per-slide redesign/repair pipeline. PDF composition preserves font proportions, native first-page layout and extracted title.
 
 
 New-deck outlines include editable opening and closing slides within the adaptive slide count. Approve the outline in step 1 to enable generation in step 2; edits require approval again. Opening and closing positions are protected. Native composition uses mostly red `Title Slide` for opening and statue-photo `1_Title Slide` for closing, replaces closing sample text without changing its artwork, and audits the resulting layouts. Run `python tools/verify_bookends_qa.py --live --output .local/verification/bookends-new` for a synthetic native-render and live-QA acceptance check; success requires actual download eligibility.
@@ -173,5 +180,3 @@ New-deck outlines include editable opening and closing slides within the adaptiv
 Review controls: finding text and slide links navigate to every affected output (including split and added slides). Use **Show all slide findings** to review other pages. **Dismiss all findings for slide N** records an acceptance reason for every finding on that output slide, including hidden suggestions. Multi-slide findings remain open on other affected slides; **Show human-reviewed findings** restores its display. Corrections use one text prompt. **Download** opens a PowerPoint/PDF choice and closes the processing session after export.
 
 Finding priorities are derived from QA materiality: blocking/review = high; cosmetic warning = low. Only high-priority findings appear initially. Low-priority suggestions can be shown and do not block a completed review. Slide acceptances are scoped to the generated artifact; API, rendering, and incomplete-QA errors cannot be waived. Vercel HTTP 402 is reported as a provider billing error, with a specific API-key budget message when available, and is not automatically retried. App request/token caps and Vercel team/key budgets are separate.
-  
-  

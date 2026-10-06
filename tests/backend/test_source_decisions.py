@@ -51,6 +51,35 @@ def image_source(tmp_path):
     return source
 
 
+@pytest.mark.parametrize('protected',['link','dependency','text'])
+def test_cover_decoration_rule_does_not_require_forbidden_removal(tmp_path,protected):
+    source=image_source(tmp_path)
+    if protected=='link':
+        p=Presentation(source)
+        p.slides[0].shapes[-1].click_action.hyperlink.address='https://example.com/'
+        p.save(source)
+    p,digest,objects,value=decision(source)
+    art=value['elements'][-1]
+    if protected=='text':
+        # The native title still needs its correct semantic role for extraction;
+        # a separate text-bearing shape cannot become removable decoration.
+        p.slides[0].shapes.add_textbox(Inches(1),Inches(5),Inches(4),Inches(1)).text='Required caption'
+        p.save(source);p,digest,objects,value=decision(source);art=value['elements'][-1]
+    art.update(role='decoration',confidence='high',content_bearing=False,contains_logo=False,artwork_action='retain')
+    if protected=='dependency': value['elements'][0]['related_ids']=[art['id']]
+    approved=source_decisions.validate(value,p,0,digest)
+    assert art['id'] not in approved.remove_ids
+    art['artwork_action']='remove';value['remove_ids']=[art['id']]
+    with pytest.raises(ValueError): source_decisions.validate(value,p,0,digest)
+
+
+def test_cover_rejection_names_only_removable_obsolete_artwork(tmp_path):
+    source=image_source(tmp_path);p,digest,objects,value=decision(source)
+    art=value['elements'][-1]
+    art.update(role='decoration',confidence='high',content_bearing=False,contains_logo=False,artwork_action='retain')
+    with pytest.raises(ValueError,match=art['id']):source_decisions.validate(value,p,0,digest)
+
+
 @pytest.mark.parametrize('damage',['logo','content','unknown','text','dependency'])
 def test_removal_cannot_exempt_protected_source_elements(tmp_path,damage):
     source=image_source(tmp_path);p,digest,objects,value=decision(source)

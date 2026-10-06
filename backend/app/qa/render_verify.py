@@ -1,5 +1,6 @@
 """Required evidence from a fresh render of the candidate bytes."""
 import json
+import unicodedata
 from collections import Counter
 from pathlib import Path
 import fitz
@@ -8,6 +9,21 @@ from slide_engine.inventory import sha256, normalize, walk_shapes
 from slide_engine.ir import _group_xf
 from pptx.oxml.ns import qn
 from .. import rendering
+
+
+def reordered_math_glyphs(expected, rendered):
+    """Some PDF exporters emit fallback math glyphs after surrounding text.
+
+    This only identifies uncertainty for visual review, never a verified match.
+    Every symbol must be present in the same object region and all remaining
+    wording must still occur in order. Missing or changed symbols stay failures.
+    """
+    symbols = {c for c in expected if ord(c)>127 and unicodedata.category(c)=='Sm'}
+    if not symbols or any(rendered.count(c)<expected.count(c) for c in symbols):
+        return False
+    strip = lambda text: ''.join(c for c in text if c not in symbols)
+    wording = strip(expected)
+    return bool(wording) and wording in strip(rendered)
 
 
 def check(candidate, directory):
@@ -93,9 +109,10 @@ def check(candidate, directory):
                             else:
                                 visible = full_text.count(compact) >= counts[compact]
                                 glyph = len(compact)>1 and compact[0] in '▪■•·' and compact[1:] in remainder
-                                findings.append({'code':'RENDER_TEXT_OUTSIDE_OBJECT' if visible else 'RENDER_GLYPH_UNVERIFIED' if glyph else 'RENDER_TEXT_UNVERIFIED',
-                                    'severity':'review' if visible or glyph else 'blocking',
-                                    'output_slide':i,'message':'Text is present in the PDF but extends outside its object region; inspect fit and occlusion.' if visible else 'Text is present but its leading list glyph could not be verified; inspect the rendered marker.' if glyph else 'Expected text was not found inside its rendered object region.',
+                                math_order = reordered_math_glyphs(compact, remainder)
+                                findings.append({'code':'RENDER_TEXT_OUTSIDE_OBJECT' if visible else 'RENDER_GLYPH_UNVERIFIED' if glyph else 'RENDER_MATH_ORDER_UNVERIFIED' if math_order else 'RENDER_TEXT_UNVERIFIED',
+                                    'severity':'review' if visible or glyph or math_order else 'blocking',
+                                    'output_slide':i,'message':'Text is present in the PDF but extends outside its object region; inspect fit and occlusion.' if visible else 'Text is present but its leading list glyph could not be verified; inspect the rendered marker.' if glyph else 'The wording and math symbols are present in this region, but PDF extraction reordered the symbols. Inspect their rendered positions.' if math_order else 'Expected text was not found inside its rendered object region.',
                                     'expected':text,'evidence':str(directory/f'slide-{i}.png')})
             visit(slide.shapes)
             spans = [s for b in page.get_text('dict')['blocks'] if 'lines' in b for line in b['lines'] for s in line['spans']]

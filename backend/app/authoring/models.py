@@ -7,6 +7,7 @@ class Strict(BaseModel):
 
 
 class CreationRequest(Strict):
+    template_id: Literal['stevens','cpe'] = 'stevens'
     topic: str = Field(default='', max_length=12000)
     audience: str = Field(min_length=1, max_length=500)
     length_preference: Literal['auto', 'brief', 'standard', 'detailed'] = 'auto'

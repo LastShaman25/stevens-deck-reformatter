@@ -54,7 +54,7 @@ def test_source_contract_failure_still_runs_paired_qa_and_blocks_release(ai_sess
     assert record['checks']['ai_visual_review']['status']=='passed'
     assert record['checks']['ai_redesign']['status']=='error'
     assert record['ai_pipeline']['source_preparation_error']
-    assert not generations.download_allowed(record)
+    assert not generations.checks_satisfied(record)
 
 
 @pytest.mark.parametrize('damage',['missing','duplicate','silent_blocker'])

@@ -16,7 +16,7 @@ os.environ['STEVENS_WORKSPACE_ROOT'] = tempfile.mkdtemp(prefix='stevens-test-job
 @pytest.fixture(autouse=True)
 def legacy_boundaries(request, monkeypatch):
     """Existing engine tests isolate their historical boundary; new tests use real auth/QA."""
-    if request.node.path.name == 'test_implementation.py':
+    if request.node.path.name in ('test_implementation.py','test_developer_activity.py'):
         yield
         return
     from app import auth

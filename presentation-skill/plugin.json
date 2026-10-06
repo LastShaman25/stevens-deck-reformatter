@@ -1,0 +1,6 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "stevens-cpe-presentations",
+  "version": "0.1.0",
+  "description": "Create or redesign presentations with bundled Stevens and CPE templates or a user-supplied template."
+}

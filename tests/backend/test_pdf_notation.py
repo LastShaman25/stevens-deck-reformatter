@@ -37,6 +37,37 @@ def test_import_preserves_superscript_and_subscript_origins(tmp_path):
     assert int(subscript._r.rPr.get('baseline','0'))<0
 
 
+def test_non_unicode_math_glyphs_preserved_as_source_pixels(tmp_path, monkeypatch):
+    source=tmp_path/'glyphs.pdf';output=tmp_path/'glyphs.pptx'
+    with fitz.open() as doc:
+        page=doc.new_page(width=720,height=405)
+        page.insert_text((30,60),'Editable explanation',fontsize=18)
+        page.insert_text((30,100),'(x)',fontsize=18)
+        doc.save(source)
+    original=fitz.Page.get_text
+    def text_with_font_controls(page, option='text', *args, **kwargs):
+        result=original(page,option,*args,**kwargs)
+        if option=='dict':
+            for block in result['blocks']:
+                for line in block.get('lines',[]):
+                    for span in line['spans']:
+                        if span['text']=='(x)': span['text']='\x00x\x01'
+        return result
+    monkeypatch.setattr(fitz.Page,'get_text',text_with_font_controls)
+    evidence=convert(source,output,lambda i:str(tmp_path/f'{i}.png'))
+    slide=Presentation(output).slides[0]
+    assert ''.join(s.text for s in slide.shapes if s.has_text_frame)=='Editable explanation'
+    pictures=[s for s in slide.shapes if s.name.startswith('PDF page 1 preserved text glyphs')]
+    assert len(pictures)==1
+    # The fallback must contain the original rendered equation, not a blank or
+    # replacement character. Compare exact PNG bytes with the source region.
+    with fitz.open(source) as doc:
+        line=original(doc[0],'dict')['blocks'][1]['lines'][0]
+        expected=doc[0].get_pixmap(matrix=fitz.Matrix(3,3),clip=fitz.Rect(line['bbox']),alpha=True)
+    assert pictures[0].image.blob==expected.tobytes('png')
+    assert evidence['page_evidence'][0]['rasterized_text_lines']==1
+
+
 def test_resizing_math_retains_small_runs_and_baselines():
     prs=Presentation();slide=prs.slides.add_slide(prs.slide_layouts[6])
     tf=slide.shapes.add_textbox(Inches(1),Inches(1),Inches(3),Inches(1)).text_frame

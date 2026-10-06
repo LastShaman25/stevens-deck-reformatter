@@ -11,10 +11,11 @@ from test_openai import openai_config, reply, completed
 
 @pytest.mark.parametrize('check',['ai_redesign','ai_visual_review','output_qa_coverage','output_qa_sequence','output_qa_accuracy','output_qa_visual','render_verification'])
 @pytest.mark.parametrize('state',['not_run','error','failed','checking','needs_review'])
-def test_no_download_bypass_for_unfinished_or_failed_checks(ai_session,check,state):
+def test_no_download_bypass_for_unfinished_processing(ai_session,check,state):
     record=generations.build(ai_session,mode='ai')
     record['checks'][check]={'status':state,'findings':[]}
-    # Even stale readiness and draft=true cannot bypass the backend gate.
+    record['processing_complete']=False
+    # Even stale readiness and draft=true cannot bypass the completion gate.
     record['state']='ready'
     client=TestClient(app)
     for format in ('pptx','pdf'):
@@ -34,12 +35,12 @@ def test_human_review_accepts_completed_qa_without_rewriting_verdict(check,sever
     record['findings']=[finding]
     record['checks'][check]={'status':status,'findings':[finding]}
     assert generations.can_approve(record,finding)
-    assert not generations.download_allowed(generations.settle(record))
+    assert not generations.checks_satisfied(generations.settle(record))
     record['human_decisions']=[{'generation_id':'g','candidate_sha256':'hash','finding_ids':['qa:0'],'rationale':'Inspected the render'}]
-    assert generations.download_allowed(generations.settle(record))
+    assert generations.checks_satisfied(generations.settle(record))
     assert record['checks'][check]['status']==status
     record['human_decisions'][0]['candidate_sha256']='old hash'
-    assert not generations.download_allowed(generations.settle(record))
+    assert not generations.checks_satisfied(generations.settle(record))
 
 
 @pytest.mark.parametrize('state',['not_run','error','checking'])
@@ -50,7 +51,7 @@ def test_incomplete_qa_cannot_be_human_accepted(state):
     assert not generations.can_approve(record,{'check':'output_qa_visual','severity':'blocking'})
 
 
-def test_http_human_acceptance_releases_only_after_all_findings_are_reviewed(ai_session):
+def test_http_acceptance_preserves_verdict_and_scoped_review(ai_session):
     record=generations.build(ai_session,mode='ai')
     for name in generations.required_checks(record):
         generations.add_check(record,name,{'status':'passed','findings':[]})
@@ -64,8 +65,9 @@ def test_http_human_acceptance_releases_only_after_all_findings_are_reviewed(ai_
     assert client.post(base+'/decisions',json={**payload,'candidate_sha256':'stale'}).status_code==409
     assert client.post(base+'/decisions',json={**payload,'rationale':'   '}).status_code==409
     first=client.post(base+'/decisions',json=payload)
-    assert first.status_code==200 and not first.json()['generation']['download_allowed']
-    assert client.get(base+'/download',params={'generation_id':record['generation_id']}).status_code==409
+    assert first.status_code==200 and first.json()['generation']['download_allowed']
+    assert not generations.checks_satisfied(record)
+    assert client.get(base+'/download',params={'generation_id':record['generation_id']}).status_code==200
     payload['finding_ids']=['output_qa_visual:1']
     accepted=client.post(base+'/decisions',json=payload)
     assert accepted.status_code==200 and accepted.json()['generation']['download_allowed']
@@ -128,5 +130,6 @@ def test_rejected_layout_still_runs_diagnostic_qa_without_releasing(ai_session,m
     assert r['checks']['ai_visual_review']['status']=='failed'
     assert r['checks']['output_qa_visual']['status']=='passed'
     assert r['ai_pipeline']['rejected_slide_plans']
-    assert not generations.download_allowed(r)
+    assert generations.download_allowed(r)
+    assert not generations.checks_satisfied(r)
     assert r['repair_stop_reason']

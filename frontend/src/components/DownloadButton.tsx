@@ -13,7 +13,7 @@ export function DownloadButton({disabled, pdfAvailable, onDownload}: {
       <fieldset className="my-5 space-y-3"><legend className="sr-only">File format</legend>
         <label className="flex gap-3"><input type="radio" name={title} checked={format==='pptx'} onChange={() => setFormat('pptx')}/>PowerPoint (.pptx)</label>
         <label className="flex gap-3"><input type="radio" name={title} checked={format==='pdf'} disabled={!pdfAvailable} onChange={() => setFormat('pdf')}/>PDF (.pdf)</label>
-        {!pdfAvailable && <p className="text-sm text-stevens-gray">A verified PDF is not available for this candidate.</p>}
+        {!pdfAvailable && <p className="text-sm text-stevens-gray">A PDF render is not available for this candidate.</p>}
       </fieldset>
       <p className="mb-5 text-sm text-stevens-gray">Downloading ends this session and deletes its processing files.</p>
       <div className="flex justify-end gap-3"><button className="btn-ghost" onClick={() => dialog.current?.close()}>Cancel</button>

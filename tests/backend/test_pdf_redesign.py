@@ -43,11 +43,18 @@ def test_pdf_upload_has_editable_text_graphics_and_original_previews():
     assert not Path(s.dir).exists()
 
 
-def test_scanned_pdf_does_not_silently_become_a_thumbnail():
+def test_blank_pdf_page_is_preserved_and_reported_as_image():
     doc=fitz.open();doc.new_page()
     client=TestClient(app)
     r=client.post('/api/sessions',files={'file':('scan.pdf',doc.tobytes(),'application/pdf')})
-    assert r.status_code==400 and 'OCR' in r.text
+    assert r.status_code==200,r.text
+    session=sessions.get(r.json()['session_id'])
+    try:
+        evidence=session.pdf_import['page_evidence'][0]
+        assert evidence['page_image_regions']==1
+        assert 'not individually editable' in evidence['preservation']
+        assert len(Presentation(session.source_path).slides)==1
+    finally: sessions.delete(session.id)
 
 
 def test_failed_source_preparation_still_runs_independent_qa(ai_session,monkeypatch):
@@ -60,7 +67,8 @@ def test_failed_source_preparation_still_runs_independent_qa(ai_session,monkeypa
     r=generations.build(ai_session,mode='ai')
     assert r['checks']['ai_redesign']['status']=='error'
     assert calls and all(r['checks'][n]['status']=='passed' for n in output_qa.CHECKS)
-    assert not generations.download_allowed(r)
+    assert generations.download_allowed(r)
+    assert not generations.checks_satisfied(r)
 
 
 def test_timeout_retries_once_with_bounded_timeout(openai_config,monkeypatch):
@@ -83,12 +91,14 @@ def test_pdf_download_has_same_release_gate_and_detects_tampering(ai_session,mon
     client=TestClient(app);url=f'/api/sessions/{ai_session.id}/download'
     query={'generation_id':r['generation_id'],'format':'pdf'}
     r['state']='error'
+    r['processing_complete']=False
     assert client.get(url,params=query).status_code==409
     assert client.get(url,params={**query,'draft':True}).status_code==409
     ids=[f['id'] for f in r['findings'] if f['severity']=='review']
     if ids:
         generations.decide(ai_session,generations.Decision(generation_id=r['generation_id'],candidate_sha256=r['candidate_sha256'],finding_ids=ids,rationale='Reviewed synthetic test fixture.'))
-    r['state']='ready'
+    r['state']='error'  # QA errors do not block an intact, completed PDF.
+    r['processing_complete']=True
     assert client.get(url,params=query).content==export.read_bytes()
     export.write_bytes(b'changed')
     assert client.get(url,params=query).status_code==409

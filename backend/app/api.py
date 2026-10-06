@@ -3,12 +3,12 @@ import hashlib
 import os
 from pathlib import Path
 from typing import Literal
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse, Response
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, ConfigDict
 from pptx import Presentation
-from . import sessions, grounded, rendering, generations
+from . import sessions, grounded, rendering, generations, activity
 from .ai import providers, optional_review
 
 router = APIRouter(prefix='/api')
@@ -36,7 +36,7 @@ def capabilities():
 
 def info(sess):
     return {'session_id': sess.id, 'name': sess.original_name, 'expires_at': sess.expires,
-            'workflow': sess.workflow, **sess.analysis,
+            'workflow': sess.workflow, 'template_id':getattr(sess,'template_id','stevens'), **sess.analysis,
             'capabilities': capabilities(), 'revisions': sess.revisions,
             'revision_version': sess.revision_version, 'generation': generations.public(sess.generation),
             'preview_generation': generations.public(next((r for r in reversed(list(sess.history.values()))
@@ -51,17 +51,26 @@ def health():
 
 
 @router.post('/sessions')
-async def create_session(file: UploadFile = File(...)):
+async def create_session(file: UploadFile = File(...), template_id: Literal['stevens','cpe'] = Form('stevens')):
     if not (file.filename or '').lower().endswith(('.pptx','.pdf')):
         raise HTTPException(400, 'Please upload a .pptx or .pdf file.')
     data = await file.read(sessions.MAX_UPLOAD_BYTES + 1)
     if len(data) > sessions.MAX_UPLOAD_BYTES:
         raise HTTPException(413, 'File too large (60 MB max).')
-    return await run_in_threadpool(analyze_upload, file.filename, data)
+    return await run_in_threadpool(analyze_upload, file.filename, data, template_id)
 
 
-def analyze_upload(filename, data):
+def analyze_upload(filename, data, template_id='stevens'):
+    from slide_engine import templates
+    if template_id not in templates.FILES: raise ValueError('Choose CPE or Stevens format.')
     sess = sessions.create()
+    sess.template_id=template_id
+    sess.original_name=os.path.basename(filename)
+    with activity.stage('importer','import_deck',sess,scope='job_operation'):
+        return _analyze_into(sess,filename,data)
+
+
+def _analyze_into(sess,filename,data):
     try:
         with sessions.job(sess):
             sess.original_name = os.path.basename(filename)
@@ -249,7 +258,7 @@ def ai_check(sid: str, index: int, body: AiRequest):
 
 def artifact_bytes(sess, ready, format='pptx'):
     record = sess.generation
-    # A legacy draft=true request must never bypass mandatory QA.
+    # A legacy draft=true request must never bypass completion or identity checks.
     generations.verify_identity(sess, record, ready=True)
     data = Path(record['candidate']).read_bytes()
     if hashlib.sha256(data).hexdigest() != record['candidate_sha256']:
@@ -258,7 +267,7 @@ def artifact_bytes(sess, ready, format='pptx'):
         export = record.get('pdf_export', {})
         path = Path(export.get('path', ''))
         if not path.is_file() or export.get('candidate_sha256') != record['candidate_sha256'] or generations.sha256(path) != export.get('sha256'):
-            raise ValueError('Verified PDF render is unavailable or changed. Regenerate this candidate.')
+            raise ValueError('PDF render is unavailable or changed. Regenerate this candidate.')
         return path.read_bytes()
     return data
 
@@ -272,7 +281,7 @@ def download(sid: str, draft: bool=False, generation_id: str | None=None, format
                 raise ValueError('GENERATION_MISMATCH')
             data = artifact_bytes(sess, ready=not draft, format=format)
             sess.close_after = min(__import__('time').time()+600, sess.expires)
-            filename = ('Stevens-unverified-draft.' if draft else 'Stevens-verified.')+format
+            filename = ('CPE' if getattr(sess,'template_id','stevens')=='cpe' else 'Stevens')+('-unverified-draft.' if draft else '-presentation.')+format
             return Response(data, media_type='application/pdf' if format=='pdf' else 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
                 headers={'Content-Disposition':f'attachment; filename="{filename}"', 'Cache-Control':'no-store'})
     except ValueError as exc:

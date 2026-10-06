@@ -35,7 +35,7 @@ from slide_fixer.engine import _bare, _clear_bullets, _insert_bullet_group  # no
 from . import brand
 from .qa import geometry
 
-TEMPLATE_PATH = os.path.join(_BACKEND, "assets", "ppt_template.pptx")
+TEMPLATE_PATH = os.path.join(_BACKEND, "assets", "stevens_template.pptx")
 
 
 def C(hex6):

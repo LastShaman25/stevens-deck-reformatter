@@ -123,7 +123,7 @@ def execute(sess,candidate,report,directory,repair_passes=1,progress=lambda **kw
         started=time.monotonic()
         if max_calls is not None and calls_used+len(ai['calls'])>=max_calls:
             result={'status':'budget_exhausted','message':f'The configured limit of {max_calls} AI calls was reached.'}
-        else:result=providers.generate(role,system,payload,images,max_tokens=16000 if role in ('planner','element_roles') else 10000)
+        else:result=providers.generate(role,templates.prompt(system),payload,images,max_tokens=16000 if role in ('planner','element_roles') else 10000)
         ai['calls'].append({'role':'source_decision' if payload.get('stage')=='source_decisions' else 'logo_extraction_review' if payload.get('stage')=='logo_extraction_review' else role,'output_slide':index,'attempt':attempt,
                            'elapsed_seconds':round(time.monotonic()-started,3),
                            **{k:v for k,v in result.items() if k!='data'}})
@@ -145,13 +145,14 @@ def execute(sess,candidate,report,directory,repair_passes=1,progress=lambda **kw
 
     from . import source_decisions
     from .. import grounded
+    from slide_engine import templates
     template_images=[]
     preparation_problem=None
     try:
-        references=render_verify.check(grounded.TEMPLATE_PATH,directory/'template-reference-render')
+        references=render_verify.check(templates.path(),directory/'template-reference-render')
         if references.get('status')=='error' or not references.get('pages'):
             raise ValueError('Template reference rendering failed.')
-        template_prs=Presentation(grounded.TEMPLATE_PATH)
+        template_prs=Presentation(templates.path())
         template_images=[(f"APPROVED TEMPLATE: {template_prs.slides[p['output_slide']].slide_layout.name}",Path(p['png']))
                          for p in references['pages']]
         ai['template_references']=[{'label':label,'layout':label.removeprefix('APPROVED TEMPLATE: '),

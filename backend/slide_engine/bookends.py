@@ -4,11 +4,11 @@ from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
 from pptx.enum.text import MSO_ANCHOR
-from . import template_policy as T
+from . import template_policy as T, templates
 
 TITLE = 'Thank you!'
 MARKER = 'template-required-closing|title'
-AUTHORIZATION = 'User-required final Thank you slide using the approved Stevens statue-photo closing template; added after all original slides.'
+AUTHORIZATION = 'User-required final Thank you slide using the selected approved closing template; added after all original slides.'
 
 
 def has_thanks(slide):
@@ -21,7 +21,7 @@ def ensure(candidate, report):
     report['require_closing']=True
     if len(prs.slides) and T.is_closing(prs.slides[-1]) and has_thanks(prs.slides[-1]):
         return report
-    layout=next(l for l in prs.slide_layouts if l.name==T.CLOSING_LAYOUT)
+    layout=next(l for l in templates.layouts(prs) if l.name==T.CLOSING_LAYOUT)
     for shape in list(layout.shapes):
         if shape.has_text_frame and shape.text.strip(): shape._element.getparent().remove(shape._element)
     slide=prs.slides.add_slide(layout)

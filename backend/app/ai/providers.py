@@ -12,6 +12,20 @@ DEFAULTS = {'OPENAI_MODEL':'gpt-6-luna', 'ANTHROPIC_MODEL':'claude-sonnet-4-5', 
 PROVIDERS = {'openai':'OPENAI', 'anthropic':'ANTHROPIC', 'gemini':'GEMINI', 'vercel':'AI_GATEWAY'}
 REDESIGN_ROLES = ('planner', 'element_roles', 'redesigner')
 GENERATION_ROLES = ('outline', 'author', 'extractor', 'generator')
+MAX_PROMPT_CHARS = 300000
+
+
+class RequestPreparationError(ValueError):
+    def __init__(self, code, message, **metadata):
+        super().__init__(message)
+        self.code, self.metadata = code, metadata
+
+
+def prompt_text(payload, provider):
+    value = {k:v for k,v in payload.items() if k!='schema'} if provider in ('openai','vercel') else payload
+    return json.dumps(value, ensure_ascii=False, separators=(',', ':'))
+
+
 GATEWAY_DEFAULTS = {'redesigner':'openai/gpt-6-luna',
                     'generator':'anthropic/claude-opus-5.5',
                     'reviewer':'anthropic/claude-opus-5.5'}
@@ -95,14 +109,41 @@ def strict_schema(value):
 
 def generate(role, system, payload, images=(), max_tokens=16000):
     """One bounded retry for transport or malformed responses; every attempt consumes budget."""
+    from slide_engine import templates
+    system=templates.prompt(system)
     attempts=[]
     for _ in range(2):
-        result=_generate_once(role,system,payload,images,max_tokens)
+        from .. import activity
+        import time
+        config=role_config(role);started=time.monotonic()
+        details={'provider':config['provider'],'model':config['model'],'attempt':len(attempts)+1}
+        activity.emit(role,'request_attempt',**details)
+        try:
+            result=_generate_once(role,system,payload,images,max_tokens)
+        except Exception as exc:
+            activity.emit(role,'request_attempt','error',**details,error_type=type(exc).__name__,duration_ms=round((time.monotonic()-started)*1000))
+            raise
+        activity.emit(role,'request_attempt',result['status'],**details,http_status=result.get('http_status'),
+            duration_ms=round((time.monotonic()-started)*1000),**usage_counts(result.get('usage',{})))
         attempts.append(result['status'])
         retryable=result['status'] in ('timeout','provider_error') or (
             result['status']=='invalid_response' and result.get('failure_stage') in ('response_json','response_content','structured_output'))
         if not retryable: break
     return {**result,'request_attempts':len(attempts),'attempt_statuses':attempts}
+
+
+def usage_counts(usage):
+    """Normalize reported usage; never estimate missing provider counts."""
+    def count(*keys):
+        return next((int(usage[k]) for k in keys if isinstance(usage.get(k),(int,float)) and not isinstance(usage[k],bool)),None)
+    inp=count('input_tokens','prompt_tokens','promptTokenCount')
+    out=count('output_tokens','completion_tokens','candidatesTokenCount')
+    # Anthropic reports cache input separately; Gemini separates thinking output.
+    if inp is not None:inp+=sum(count(k) or 0 for k in ('cache_creation_input_tokens','cache_read_input_tokens'))
+    if out is not None and 'candidatesTokenCount' in usage:out+=count('thoughtsTokenCount') or 0
+    total=count('total_tokens','totalTokenCount')
+    if total is None and inp is not None and out is not None:total=inp+out
+    return {k:v for k,v in {'input_tokens':inp,'output_tokens':out,'tokens':total}.items() if v is not None}
 
 
 def token_limit(sess):
@@ -173,12 +214,16 @@ def _generate_once(role, system, payload, images=(), max_tokens=16000):
         if sess and sess.execution_deadline:
             read_timeout=min(read_timeout,max(1,int(sess.execution_deadline-time.time()-15)))
         request_timeout=(15,read_timeout)
+        prompt=prompt_text(payload, config['provider'])
+        if len(prompt)>MAX_PROMPT_CHARS:
+            raise RequestPreparationError('prompt_too_large',
+                f'AI review metadata is too large ({len(prompt):,} characters; limit {MAX_PROMPT_CHARS:,}). Reduce repeated review metadata or split the review.',
+                prompt_chars=len(prompt), prompt_limit=MAX_PROMPT_CHARS)
         for label,path in images:
             data=Path(path).read_bytes()
-            if len(data)>8*1024*1024:raise ValueError('Image too large')
+            if len(data)>8*1024*1024:
+                raise RequestPreparationError('image_too_large', 'A review image exceeds the supported 8 MiB size.', image_bytes=len(data))
             encoded.append((label,base64.b64encode(data).decode('ascii')))
-        prompt=json.dumps({k:v for k,v in payload.items() if k!='schema'} if config['provider'] in ('openai','vercel') else payload,ensure_ascii=False)
-        if len(prompt)>300000:raise ValueError('Slide payload exceeds the supported size')
         if config['provider']=='vercel':
             if not re.fullmatch(r'[A-Za-z0-9._-]+/[A-Za-z0-9._:/-]+',config['model']):raise ValueError('Use creator/model for AI Gateway')
             effort=config['reasoning_effort']
@@ -295,6 +340,9 @@ def _generate_once(role, system, payload, images=(), max_tokens=16000):
             sess.ensure_active()
         failure_stage='structured_output'
         return {**base,'status':'completed','data':_parse(output),'usage':usage}
+    except RequestPreparationError as exc:
+        return {**base,'status':'invalid_response','failure_stage':'request_preparation',
+                'error_type':type(exc).__name__,'error_code':exc.code, **exc.metadata, 'message':str(exc)}
     except json.JSONDecodeError:
         return {**base,'status':'invalid_response','failure_stage':failure_stage,
                 'message':'AI returned malformed JSON. The response was rejected; no redesign or QA result was accepted.'}

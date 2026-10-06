@@ -6,22 +6,33 @@ Opening uses the mostly red Title Slide; closing uses the statue-photo 1_Title S
 from pptx.util import Inches
 import math
 
-CONTENT = (.70, .40, 11.70, 6.05)
-OPENING_LAYOUT = 'Title Slide'
-CLOSING_LAYOUT = '1_Title Slide'
-TEMPLATE_ROLE_RULE = ('Opening/first page: Title Slide, mostly burgundy/red with a faint tower on the left and a white Stevens mark at top-right; NO campus/statue photograph. Closing/thank-you page: 1_Title Slide, statue photograph on the left and burgundy on the right. Despite its name, 1_Title Slide is the CLOSING artwork. Do not use Thank You Slide (balloon photograph). Never swap these roles.')
-COVER_TITLE = (4.648, 2.739, 7.962, 2.255)
-COVER_SUPPORT = (.55, 2.74, 3.60, 3.50)
-# The left edge of the burgundy panel slopes right toward the bottom; keep
-# the entire details block, including bottom notes, clear of that diagonal.
-COVER_DETAILS = (5.114, 5.021, 7.496, 1.664)
-CLOSING_TITLE = (7.967, 2.80, 4.643, 2.15)
-CLOSING_DETAILS = (7.75, 5.021, 4.86, 1.664)
-# Start below the complete top-right mark, rather than using the layout's
-# oversized title placeholder whose top edge shares the logo's vertical band.
-SECTION_TITLE = (7.236, 2.50, 5.374, 3.22)
-SECTION_DETAILS = (7.50, 5.90, 5.11, 1.02)
-SECTION_SUPPORT = (.45, 1.15, 5.95, 5.30)
+from . import templates
+
+STEVENS = {'CONTENT': (0.7, 0.4, 11.7, 6.05),
+ 'OPENING_LAYOUT': 'Title Slide',
+ 'CLOSING_LAYOUT': '1_Title Slide',
+ 'TEMPLATE_ROLE_RULE': 'Opening/first page: Title Slide, mostly burgundy/red with a faint tower on the left '
+                       'and a white Stevens mark at top-right; NO campus/statue photograph. '
+                       'Closing/thank-you page: 1_Title Slide, statue photograph on the left and burgundy on '
+                       'the right. Despite its name, 1_Title Slide is the CLOSING artwork. Do not use Thank '
+                       'You Slide (balloon photograph). Never swap these roles.',
+ 'COVER_TITLE': (4.648, 2.739, 7.962, 2.255),
+ 'COVER_SUPPORT': (0.55, 2.74, 3.6, 3.5),
+ 'COVER_DETAILS': (5.114, 5.021, 7.496, 1.664),
+ 'CLOSING_TITLE': (7.967, 2.8, 4.643, 2.15),
+ 'CLOSING_DETAILS': (7.75, 5.021, 4.86, 1.664),
+ 'SECTION_TITLE': (7.236, 2.5, 5.374, 3.22),
+ 'SECTION_DETAILS': (7.5, 5.9, 5.11, 1.02),
+ 'SECTION_SUPPORT': (0.45, 1.15, 5.95, 5.3),
+ 'CONTENT_LAYOUT': 'Title Only',
+ 'SECTION_LAYOUT': 'Section Header'}
+
+
+def __getattr__(name):
+    if name in STEVENS: return getattr(templates.profile(),name)
+    raise AttributeError(name)
+
+
 BACKGROUND_NAME = 'template-source-background'
 EMU = 914400
 CANVAS = (12192000, 6858000)
@@ -35,7 +46,13 @@ def retain_opening_artwork(prs):
     Materialize only its native fill/geometry as fixed layout artwork.
     """
     from copy import deepcopy
-    layout=next(l for l in prs.slide_layouts if l.name==OPENING_LAYOUT)
+    layout=next(l for l in templates.layouts(prs) if l.name==templates.profile().OPENING_LAYOUT)
+    if templates.current_id()=='cpe':
+        # Source details are composed in the left details region. The optional
+        # sample presenter label must not survive alone in the branding panel.
+        for shape in list(layout.shapes):
+            if shape.has_text_frame and shape.text.strip()=='Presenter:':
+                shape._element.getparent().remove(shape._element)
     for shape in list(layout.shapes):
         if not shape.is_placeholder or not shape._element.xpath('./p:nvSpPr/p:nvPr/p:ph[@type="dt"]'):
             continue
@@ -56,22 +73,22 @@ def canvas_matches(width, height, expected=CANVAS):
 
 
 def is_cover(slide):
-    return slide.slide_layout.name == OPENING_LAYOUT
+    return slide.slide_layout.name == templates.profile().OPENING_LAYOUT
 
 
 def is_closing(slide):
-    return slide.slide_layout.name == CLOSING_LAYOUT
+    return slide.slide_layout.name == templates.profile().CLOSING_LAYOUT
 
 
 def is_section(slide):
-    return slide.slide_layout._element.get('type') == 'secHead'
+    return slide.slide_layout.name == templates.profile().SECTION_LAYOUT or slide.slide_layout._element.get('type') == 'secHead'
 
 
 def regions(slide):
-    if is_closing(slide): return (CLOSING_TITLE, CLOSING_DETAILS, SECTION_SUPPORT)
-    if is_cover(slide): return (COVER_TITLE, COVER_DETAILS, COVER_SUPPORT)
-    if is_section(slide): return (SECTION_TITLE, SECTION_DETAILS, SECTION_SUPPORT)
-    return (CONTENT,)
+    if is_closing(slide): return (templates.profile().CLOSING_TITLE, templates.profile().CLOSING_DETAILS, templates.profile().SECTION_SUPPORT)
+    if is_cover(slide): return (templates.profile().COVER_TITLE, templates.profile().COVER_DETAILS, templates.profile().COVER_SUPPORT)
+    if is_section(slide): return (templates.profile().SECTION_TITLE, templates.profile().SECTION_DETAILS, templates.profile().SECTION_SUPPORT)
+    return (templates.profile().CONTENT,)
 
 
 def is_preserved(slide):
@@ -124,10 +141,17 @@ def contains(rect, region, tolerance=.015):
 
 
 def contract(slide):
+    if templates.current_id()=='cpe':
+        kind='cover' if is_cover(slide) else 'closing' if is_closing(slide) else 'section' if is_section(slide) else 'content'
+        boxes=regions(slide)
+        return {'layout':slide.slide_layout.name,'slide_kind':kind,'rule':templates.profile().TEMPLATE_ROLE_RULE,
+                **({'content_box':boxes[0],'protected_footer':(0,6.0,13.333333,1.5)} if kind=='content' else
+                   {'title_box':boxes[0],'details_box':boxes[1],'support_box':boxes[2]})}
+
     if is_closing(slide):
-        return {'layout':CLOSING_LAYOUT, 'slide_kind':'closing', 'title_box':CLOSING_TITLE,
-                'details_box':CLOSING_DETAILS, 'protected_footer':None,
-                'rule':TEMPLATE_ROLE_RULE+' Use the approved closing artwork, white title and short closing points on the burgundy right panel. Keep the photo and logo clear. Do not apply interior footer rules or add a bottom-left wordmark.'}
+        return {'layout':templates.profile().CLOSING_LAYOUT, 'slide_kind':'closing', 'title_box':templates.profile().CLOSING_TITLE,
+                'details_box':templates.profile().CLOSING_DETAILS, 'protected_footer':None,
+                'rule':templates.profile().TEMPLATE_ROLE_RULE+' Use the approved closing artwork, white title and short closing points on the burgundy right panel. Keep the photo and logo clear. Do not apply interior footer rules or add a bottom-left wordmark.'}
     if is_preserved(slide):
         return {'slide_kind':'unchanged_source','layout':slide.slide_layout.name,
                 'section_header':is_section(slide),
@@ -135,17 +159,17 @@ def contract(slide):
                 'rule':'Source-first decision: this already matches the template. Preserve it exactly, including its original master, logo, picture, fonts and positions. Do not add an interior frame or extra logo. QA must verify source equivalence and the keep decision.'}
     if is_section(slide):
         return {'layout':slide.slide_layout.name, 'slide_kind':'section',
-                'title_box':SECTION_TITLE, 'details_box':SECTION_DETAILS, 'support_box':SECTION_SUPPORT,
+                'title_box':templates.profile().SECTION_TITLE, 'details_box':templates.profile().SECTION_DETAILS, 'support_box':templates.profile().SECTION_SUPPORT,
                 'protected_footer':None, 'bottom_left_logo':'omit',
                 'rule':'Use the Section Header photo/title composition. Omit the bottom-left Stevens wordmark; preserve complete top-right branding with its original typography. Do not add an interior frame, footer wordmark or a miniature source slide. Use dark title/details text on the white right panel. Interior footer restrictions do not apply.'}
     if is_cover(slide):
-        return {'layout':OPENING_LAYOUT, 'slide_kind':'cover', 'title_box':COVER_TITLE,
-                'details_box':COVER_DETAILS, 'support_box':COVER_SUPPORT,
+        return {'layout':templates.profile().OPENING_LAYOUT, 'slide_kind':'cover', 'title_box':templates.profile().COVER_TITLE,
+                'details_box':templates.profile().COVER_DETAILS, 'support_box':templates.profile().COVER_SUPPORT,
                 'title_and_details_text_color':'white on the inherited red template field',
                 'protected_footer':None,
                 'approved_template_artwork':'Mostly red/burgundy field, faint tower on the left, white Stevens mark at top-right and a bottom rule. There is no inherited campus or statue photo on the opening.',
-                'rule':TEMPLATE_ROLE_RULE+' Extract native title and details into the right-hand named regions. Preserve meaningful source visuals in support_box; never paste an old cover/background inset. No added template photo and no interior footer logo.'}
-    return {'layout':slide.slide_layout.name, 'slide_kind':'content', 'content_box':CONTENT,
+                'rule':templates.profile().TEMPLATE_ROLE_RULE+' Extract native title and details into the right-hand named regions. Preserve meaningful source visuals in support_box; never paste an old cover/background inset. No added template photo and no interior footer logo.'}
+    return {'layout':slide.slide_layout.name, 'slide_kind':'content', 'content_box':templates.profile().CONTENT,
             'protected_footer':(0,6.65,13.333333, .85),
             'rule':'Every editable element, including source footers/logos, must stay inside content_box. The inherited bottom-left Stevens logo and footer band must remain uncovered.'}
 
@@ -183,12 +207,12 @@ def check(candidate):
         if i == 0 and not is_cover(slide):
             findings.append({'code':'FIRST_PAGE_TEMPLATE','criterion':'brand_consistency',
                 'severity':'blocking','output_slide':0,'object_ids':[],
-                'message':'Recompose the first output page with the mostly red Title Slide opening layout before reviewing or releasing it.'})
+                'message':'Recompose the first output page with the selected opening layout before reviewing or releasing it.'})
         if i == 0 and is_cover(slide) and not is_preserved(slide):
             if any(s.name==BACKGROUND_NAME for s in slide.shapes):
                 findings.append({'code':'COVER_SOURCE_PANEL','criterion':'spatial_layout',
                     'severity':'blocking','output_slide':0,'object_ids':[BACKGROUND_NAME],
-                    'message':'Remove the obsolete source background panel from the red opening artwork; place source text in the right-hand template regions.'})
+                    'message':'Remove the obsolete source background panel from the selected opening artwork; place source text in the template text regions.'})
             titles=[s for s in slide.shapes if s.has_text_frame and s.text.strip()
                     and (s.name.endswith('|title') or s.name=='authored-title')]
             if not titles:
@@ -209,25 +233,26 @@ def check(candidate):
                 findings.append({'code':'TEMPLATE_CONTENT_BOUNDS','criterion':'spatial_layout',
                     'severity':'blocking','output_slide':i,'object_ids':[ident],
                     'message':'Place this element inside its template content region; leave the inherited logo and footer uncovered.'})
-            if is_cover(slide) and (ident.endswith('|title') or ident=='authored-title') and not contains(box,COVER_TITLE):
+            if is_cover(slide) and (ident.endswith('|title') or ident=='authored-title') and not contains(box,templates.profile().COVER_TITLE):
                 findings.append({'code':'COVER_TITLE_POSITION','criterion':'spatial_layout',
                     'severity':'blocking','output_slide':i,'object_ids':[ident],
                     'message':'Place the extracted cover title in the first-page template title box.'})
             if is_cover(slide) and shape.has_text_frame and shape.text.strip() and not ident.endswith(('|logo','|code')) and not parent:
-                if not any(contains(box,r) for r in (COVER_TITLE,COVER_DETAILS)):
+                if not any(contains(box,r) for r in (templates.profile().COVER_TITLE,templates.profile().COVER_DETAILS)):
                     findings.append({'code':'COVER_TEXT_POSITION','criterion':'spatial_layout',
                         'severity':'blocking','output_slide':i,'object_ids':[ident],
-                        'message':'Keep cover notes, footers and metadata in the right-hand text regions, not over the opening artwork.'})
+                        'message':'Keep cover notes, footers and metadata in the template text regions, not over the opening artwork.'})
     return {'status':'failed' if findings else 'passed','findings':findings}
 
 
-def cover_roles(slide, height, decision=None, text_regions=(COVER_TITLE,COVER_DETAILS)):
+def cover_roles(slide, height, decision=None, text_regions=None):
     """Conservative native extraction before any layout change; AI rechecks roles later.
 
     Ordinary text boxes can be titles. Never require a PowerPoint title placeholder.
     Keep uncertain graphics intact rather than deleting presumed decoration.
     """
-    cover=text_regions in ((COVER_TITLE,COVER_DETAILS),(CLOSING_TITLE,CLOSING_DETAILS))
+    text_regions=text_regions or (templates.profile().COVER_TITLE,templates.profile().COVER_DETAILS)
+    cover=text_regions in ((templates.profile().COVER_TITLE,templates.profile().COVER_DETAILS),(templates.profile().CLOSING_TITLE,templates.profile().CLOSING_DETAILS))
     def flow_details(elements,roles):
         x,y,w,h=text_regions[1];gap=.025
         ordered=sorted(elements,key=lambda s:((s.top or 0),(s.left or 0)))

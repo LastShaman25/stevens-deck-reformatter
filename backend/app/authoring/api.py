@@ -137,7 +137,7 @@ def download(sid: str, generation_id: str, draft: bool=False, format: Literal['p
             data = artifact_bytes(sess, ready=not draft, format=format)
             sess.close_after = min(__import__('time').time()+600, sess.expires)
             return Response(data, media_type='application/pdf' if format=='pdf' else 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-                headers={'Content-Disposition':f'attachment; filename="Stevens-presentation.{format}"', 'Cache-Control':'no-store'})
+                headers={'Content-Disposition':f'attachment; filename="{'CPE' if getattr(sess,'template_id','stevens')=='cpe' else 'Stevens'}-presentation.{format}"', 'Cache-Control':'no-store'})
     except ValueError as exc: raise HTTPException(409, str(exc))
 
 

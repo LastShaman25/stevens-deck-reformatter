@@ -94,10 +94,11 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
     try { await work(); } catch (e) { if (scope.current === token) setError((e as Error).message); }
     finally { if (scope.current === token) setBusy(false); }
   }
-  async function upload(file: File) {
+  async function upload(file: File, template: 'cpe' | 'stevens') {
     const token = ++scope.current;
     await operation(async () => {
       const data = new FormData(); data.append('file', file);
+      data.append('template_id', template);
       const res = await apiFetch('/api/sessions', {method:'POST', body:data});
       const info = await res.json();
       if (!res.ok) throw new Error(info.detail || 'Upload failed');
@@ -118,7 +119,7 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
     generationPending.current=true;setGenerating(true);setGeneration(null);
     await operation(async () => {
       await saveRevisions(sid);
-      const res = await request<{generation: Generation}>(`/sessions/${sid}/generate`, {mode:'ai',repair_passes:1});
+      const res = await request<{generation: Generation}>(`/sessions/${sid}/generate`, {mode:'preserve',repair_passes:0});
       if (token !== scope.current) return;
       generationPending.current=false;
       setGeneration(res.generation); setSaved(false);
@@ -175,7 +176,7 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
       if (!res.ok) {const err = await res.json(); throw new Error(err.detail);}
       const url = URL.createObjectURL(await res.blob());
       const a = document.createElement('a'); a.href = url;
-      a.download = (draft ? 'Stevens-unverified-draft.' : 'Stevens-verified.') + format; a.click();
+      a.download = `${session.template_id==='cpe'?'CPE':'Stevens'}-${draft?'unverified-draft':'presentation'}.${format}`; a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       if (!draft) {await request(`/sessions/${session.session_id}/finalize`, {}); await startOver(); onHome?.();}
     });
@@ -246,8 +247,9 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
     {notice && <div role="status" className="mx-5 mt-4 rounded bg-stevens-lightblue p-3 text-sm">{notice}</div>}
     {!session ? <UploadStep onFile={upload} busy={busy} /> : <main className="mx-auto max-w-7xl p-5">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-bold">{session.name}</h2>
+        <p className="text-sm font-semibold">Format: {session.template_id==='cpe'?'CPE':'Stevens'}</p>
         <p className="text-sm text-stevens-gray">{session.slide_count} source slides{previewGeneration ? ` → ${previewGeneration.built_slides} output slides` : ''}</p>{previewGeneration?.added_slides?.map(slide=><a key={slide.output_slide} className="text-sm underline" href="#slide-review" onClick={()=>navigateSlide(slide.output_slide)}>View added Thank you closing · slide {slide.output_slide+1}</a>)}</div>
-        <button className="btn-red" disabled={busy || !(aiConfig?.redesign_configured ?? aiConfig?.configured)} onClick={generate}>{busy ? 'Working…' : 'Redesign + QA'}</button></div>
+        <button className="btn-red" disabled={busy} onClick={generate}>{busy ? 'Working…' : 'Format + QA'}</button></div>
       <div className="grid gap-5 lg:grid-cols-[1fr_330px]">
         <section id="slide-review" tabIndex={-1} className="card p-5">
           <nav aria-label="Slide navigation" className="mb-4 flex flex-wrap items-center justify-between gap-2">
@@ -267,15 +269,15 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
             <Preview url={reviewingOutput ? `/api/sessions/${sid}/slides/${output}/preview?variant=after&generation_id=${previewGeneration!.generation_id}` : null} label="Generated candidate" />
           </div>
           {previewIsPrevious && <p role="status" className="mt-3 text-sm text-amber-800">Showing the previous candidate. Your latest instructions are not applied yet; generate again to update and verify it.</p>}
-          {!previewIsPrevious && previewGeneration && !generation?.download_allowed && <p className="mt-3 text-sm text-amber-800">Deck download blocked. Open findings on the affected slides below; this message does not mean the displayed slide failed.</p>}
+          {!previewIsPrevious && previewGeneration && !generation?.download_allowed && <p className="mt-3 text-sm text-amber-800">Download is unavailable until processing finishes and an output file is produced.</p>}
           <p className="mt-3 text-xs text-stevens-gray">Previews show real renders when available. Review decisions apply to a specific generated file.</p>
           {current>=0 ? <fieldset disabled={busy} className="mt-5"><legend className="text-sm font-bold">Corrections</legend>
-            <label className="mt-4 block text-sm">Redesign instructions
+            <label className="mt-4 block text-sm">Formatting instructions
               <textarea aria-label="Reviewer note" className="mt-1 w-full rounded border p-3" rows={4} placeholder="Describe what you want changed on this slide…" value={revisionPrompt(rev)} onChange={e => changeRevision({tags:[],reset_emphasis:false,instruction:e.target.value})} /></label>
             <p className="mt-1 text-xs text-stevens-gray">Instructions guide layout and styling. Original wording, chart data, notes, and links remain protected.</p>
             <button className="btn-ghost mt-2" onClick={apply}>Save revision</button>
-          </fieldset> : <p className="mt-5 text-sm text-stevens-gray">This added page is included in mandatory QA. Its findings appear below.</p>}
-          <p className="mt-4 text-xs text-stevens-gray">Redesign includes mandatory visual review of every output slide and one repair pass.</p>
+          </fieldset> : <p className="mt-5 text-sm text-stevens-gray">This added page is included in output QA. Its findings appear below.</p>}
+          <p className="mt-4 text-xs text-stevens-gray">Applies the selected template locally, then runs output QA. Review findings before downloading.</p>
           {generation?.corrections.filter(c => c.index === current).flatMap(c => c.actions).map((a,i) => <p className="mt-2 text-sm" key={i}>{a.action}: <b>{a.status}</b> — {a.message}</p>)}
         </section>
         <aside className="card p-5"><h2 className="text-lg font-bold">Verification</h2>{generation&&<QaExecution generation={generation}/>}
@@ -285,7 +287,7 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
           {generation && <><ul className="mt-3 space-y-2 text-sm">{Object.entries(generation.checks).map(([name,result]) => <li key={name}><b>{name.replace(/_/g,' ')}</b>: {result.status === 'passed' && generation.findings.some(f => f.check === name && f.severity === 'warning') ? 'passed with suggestions' : result.status.replace(/_/g,' ')}</li>)}</ul>
             <div className="mt-4 flex flex-col gap-2"><DownloadButton disabled={busy || !generation.download_allowed} pdfAvailable={!!generation.pdf_available} onDownload={format => download(false, format)}/>
               <button className="btn-ghost" onClick={async()=>{await startOver();onHome?.();}}>Finish and delete</button></div>
-            <p className="mt-2 text-xs text-stevens-gray">QA must complete. Resolve each material issue or explicitly accept it after human review. Cosmetic suggestions do not block downloads. Download and finish deletes processing files.</p></>}
+            <p className="mt-2 text-xs text-stevens-gray">Downloads are available after processing finishes. QA findings and failures remain visible for review. Download and finish deletes processing files.</p></>}
           {generation?.ai_pipeline && <div className="mt-4 text-sm"><b>AI pipeline: {generation.ai_pipeline.status}</b>
             {generation.ai_pipeline.failure_message && <p className="mt-2 text-stevens-red">{generation.ai_pipeline.failure_message}</p>}
             {generation.source_decisions?.[String(current)] && <p className="mt-2">This slide: {generation.source_decisions[String(current)].action==='keep_original'?'kept unchanged':'redesigned'} · {generation.source_decisions[String(current)].removed_artwork} artwork elements removed. {!!generation.source_decisions[String(current)].extracted_logos && <>{generation.source_decisions[String(current)].extracted_logos} embedded logos preserved. </>}{generation.source_decisions[String(current)].reason}</p>}

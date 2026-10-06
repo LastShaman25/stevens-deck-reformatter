@@ -20,7 +20,7 @@ from .rules import DEFAULT_RULES
 from .engine import _set_run, set_square_bullet, set_no_bullet
 from .content import extract, classify_kind
 
-TEMPLATE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "assets", "ppt_template.pptx"))
+TEMPLATE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "assets", "stevens_template.pptx"))
 
 # layout names in the Stevens template
 L_TITLE = "Title Slide"

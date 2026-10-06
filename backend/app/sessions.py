@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from threading import Lock
+from slide_engine import templates
 
 TTL_SECONDS = 3600
 ABSOLUTE_SECONDS = 4 * 3600
@@ -45,6 +46,7 @@ class Session:
         self.active_jobs = self.revision_version = self.calls = self.tokens = 0
         self.generated = self.benchmarked = False
         self.workflow = 'preserve'
+        self.template_id = 'stevens'
         self.creation = None
         self.progress = {'stage': 'created'}
         self.persist_lifecycle()
@@ -165,7 +167,8 @@ def job(sess):
         sess.execution_deadline = time.time()+2700
     token = active_session.set(sess)
     try:
-        yield sess
+        with templates.use(getattr(sess,'template_id','stevens')):
+            yield sess
     finally:
         active_session.reset(token)
         with _lock:
@@ -184,7 +187,8 @@ def read_job(sess):
             raise ValueError('Session expired.')
         sess.active_jobs += 1
     try:
-        yield sess
+        with templates.use(getattr(sess,'template_id','stevens')):
+            yield sess
     finally:
         with _lock:
             sess.active_jobs -= 1

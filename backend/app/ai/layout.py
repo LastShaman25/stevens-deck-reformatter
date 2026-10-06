@@ -309,6 +309,9 @@ def apply(candidate,out,plans,report):
                 shape.left=round((edit.x*EMU-ox)/sx);shape.top=round((edit.y*EMU-oy)/sy)
                 shape.width=max(1,round(edit.w*EMU/sx));shape.height=max(1,round(edit.h*EMU/sy))
                 changed=tuple(old)!=(shape.left,shape.top,shape.width,shape.height)
+                if shape.has_table:
+                    from slide_engine.table_geometry import resize
+                    changed |= resize(shape, shape.width, shape.height)
                 if shape._element.tag==qn('p:grpSp'):
                     changes+=changed
                     visit(shape.shapes,group_frame(shape,frame));continue

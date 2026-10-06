@@ -1,0 +1,22 @@
+import {beforeEach,expect,test,vi} from 'vitest';
+import {render,screen,fireEvent,waitFor} from '@testing-library/react';
+import {DeveloperActivity} from './DeveloperActivity';
+const response=(data:unknown)=>Promise.resolve({ok:true,status:200,json:async()=>data} as Response);
+const job={job_id:'job-1',started_at:'2026-10-02T12:00:00Z',updated_at:'2026-10-02T12:00:03Z',status:'completed',workflow:'generate',input_category:'idea',output_category:'pptx / pdf',duration_ms:3000,input_tokens:200,output_tokens:30,tokens:230,requests:2,event_count:2,usage_complete:false};
+const recent={id:'recent',timestamp:'2026-10-02T12:00:03Z',job_id:'job-1',agent:'reviewer',action:'request_attempt',status:'completed',input_tokens:200,output_tokens:30};
+const older={...recent,id:'older',timestamp:'2026-10-02T12:00:00Z',agent:'planner'};
+beforeEach(()=>vi.restoreAllMocks());
+test('older events remain visible and totals stay job-wide',async()=>{
+  const fetcher=vi.fn((url:string)=>response(url==='/api/developer/jobs'?{jobs:[job]}:url.includes('&before=')?{events:[older],next_before:null}:{events:[recent],next_before:'[1,"cursor"]'}));
+  vi.stubGlobal('fetch',fetcher);render(<DeveloperActivity/>);
+  fireEvent.click(await screen.findByRole('button',{name:'Open job job-1'}));
+  expect(await screen.findByText('reviewer')).toBeVisible();
+  expect(screen.getByText('Total tokens: 230 · 2 requests')).toBeVisible();
+  fireEvent.click(screen.getByRole('button',{name:/Load older events/}));
+  expect(await screen.findByText('planner')).toBeVisible();
+  expect(screen.getByText('reviewer')).toBeVisible();
+  expect(screen.getByLabelText('Live updates')).not.toBeChecked();
+  await waitFor(()=>expect(screen.queryByRole('button',{name:/Load older events/})).not.toBeInTheDocument());
+  expect(screen.getByText('Showing 2 of 2 events')).toBeVisible();
+  expect(screen.getByText(/Usage is incomplete:/)).toBeVisible();
+});

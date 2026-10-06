@@ -6,6 +6,8 @@ New-Item -ItemType Directory -Force $runtime | Out-Null
 # Use the project's local credential, not an unrelated inherited shell credential.
 Remove-Item Env:OPENAI_API_KEY -ErrorAction SilentlyContinue
 $env:STEVENS_OFFLINE = '0'
+$renderer = Join-Path $root '.local/tools/libreoffice/extracted/program/soffice.com'
+if (Test-Path -LiteralPath $renderer) { $env:STEVENS_SOFFICE = $renderer }
 # Development is intentionally unlimited, even if the shell or .env carries a
 # deployment budget. Do not introduce development spending/request/token caps.
 $env:STEVENS_AI_MAX_CALLS = '0'

@@ -40,14 +40,14 @@ def test_release_and_stale_version(sess,monkeypatch):
     assert client.get(base+'/download',params={'generation_id':r['generation_id']}).status_code==409
 
 
-def test_required_verifier_crash_blocks_final(sess,monkeypatch):
+def test_verifier_crash_stays_visible_with_completed_pptx_download(sess,monkeypatch):
     def crash(*args):raise RuntimeError('Injected renderer failure')
     monkeypatch.setattr(generations.render_verify,'check',crash)
     r=generations.build(sess)
     assert r['state']=='error'
     client=TestClient(app);base=f'/api/sessions/{sess.id}'
-    assert client.get(base+'/download',params={'generation_id':r['generation_id']}).status_code==409
-    assert client.get(base+'/download',params={'generation_id':r['generation_id'],'draft':True}).status_code==409
+    assert client.get(base+'/download',params={'generation_id':r['generation_id']}).status_code==200
+    assert client.get(base+'/download',params={'generation_id':r['generation_id'],'draft':True}).status_code==200
     assert client.post(base+'/benchmark',json={'generation_id':r['generation_id']}).status_code==410
     with pytest.raises(ValueError):
         generations.decide(sess,generations.Decision(generation_id=r['generation_id'],candidate_sha256=r['candidate_sha256'],finding_ids=[r['findings'][-1]['id']],rationale='Cannot override'))

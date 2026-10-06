@@ -1,4 +1,4 @@
-"""Offline adversarial tests: provider failures must never authorize release."""
+"""Offline adversarial tests: provider failures must remain visible without compromising artifact identity."""
 import json
 from copy import deepcopy
 from pathlib import Path
@@ -198,7 +198,7 @@ def test_ai_success_requires_all_checks_and_exact_download(ai_session):
 
 
 @pytest.mark.parametrize('fault',['missing_id','timeout','review_invalid','review_timeout','missing_key','budget'])
-def test_ai_incomplete_never_releases(ai_session,monkeypatch,config,fault):
+def test_ai_incomplete_retains_failed_verdict_and_completed_candidate(ai_session,monkeypatch,config,fault):
     def provider(role,system,payload,images=(),max_tokens=0):
         result=mocked_provider(role,system,payload,images,max_tokens)
         if fault=='missing_id' and role=='planner':result['data']['objects'].pop()
@@ -214,8 +214,8 @@ def test_ai_incomplete_never_releases(ai_session,monkeypatch,config,fault):
     r=generations.build(ai_session,mode='ai',repair_passes=1)
     assert r['state'] in ('error','failed'),r
     assert any(f['severity']=='blocking' for f in r['findings'])
-    assert TestClient(app).get(f'/api/sessions/{ai_session.id}/download',params={'generation_id':r['generation_id']}).status_code==409
-    assert TestClient(app).get(f'/api/sessions/{ai_session.id}/download',params={'generation_id':r['generation_id'],'draft':True}).status_code==409
+    assert TestClient(app).get(f'/api/sessions/{ai_session.id}/download',params={'generation_id':r['generation_id']}).status_code==(200 if r['candidate_sha256'] else 409)
+    assert TestClient(app).get(f'/api/sessions/{ai_session.id}/download',params={'generation_id':r['generation_id'],'draft':True}).status_code==(200 if r['candidate_sha256'] else 409)
 
 
 def test_repair_rollback_keeps_reviewed_bytes(ai_session,monkeypatch):
@@ -269,8 +269,8 @@ def test_ai_cannot_delete_content_even_if_model_reviewer_passes(ai_session,monke
 
 def test_api_mode_validation_and_diagnostics(ai_session,monkeypatch):
     client=TestClient(app)
-    assert generations.GenerateRequest().mode=='ai'
-    assert client.post(f'/api/sessions/{ai_session.id}/generate',json={'mode':'preserve'}).status_code==422
+    assert generations.GenerateRequest().mode=='preserve'
+    assert client.post(f'/api/sessions/{ai_session.id}/generate',json={'mode':'preserve'}).status_code==200
     assert client.post(f'/api/sessions/{ai_session.id}/generate',json={'mode':'unknown'}).status_code==422
     assert client.post(f'/api/sessions/{ai_session.id}/generate',json={'mode':'ai','repair_passes':10}).status_code==422
     monkeypatch.setattr(providers,'generate',lambda *a,**kw:{'status':'completed','data':{'ok':True},'model':'mock'})
@@ -335,7 +335,8 @@ def test_rejected_slide_does_not_discard_other_slide_repairs(ai_session,monkeypa
     assert r['ai_pipeline']['rejected_slide_plans']
     assert r['checks']['ai_visual_review']['status']=='failed'
     assert {f['output_slide'] for f in r['checks']['ai_visual_review']['findings']}=={1}
-    assert not generations.download_allowed(r)
+    assert generations.download_allowed(r)
+    assert not generations.checks_satisfied(r)
     assert all(v['candidate_sha256']==r['candidate_sha256'] for v in r['ai_pipeline']['final_reviews'])
 
 

@@ -49,6 +49,9 @@ def audit(slide, width, height):
                 visit(sh.shapes,lambda a,b,c,d:transform(*local(a,b,c,d)),depth+1,protected_style)
                 continue
             frames=[]
+            if sh.has_table and (abs(sum(c.width for c in sh.table.columns)-sh.width)>9144 or
+                                 abs(sum(r.height for r in sh.table.rows)-sh.height)>9144):
+                finding('fail','table_geometry','Table grid differs from its frame; resize rows and columns with the table.',sh.name)
             fill=None
             try:
                 fill=rgb(sh.fill.fore_color)
@@ -88,7 +91,9 @@ def audit(slide, width, height):
                             finding('warn','unresolved_style',f'Inherited font/size/color needs review on shape {sh.shape_id}.')
                         if name and name != B.FONT and not protected_style:
                             finding('warn','font',f'Font {name} differs from Arial.')
-                        if sh.name.endswith('|title') and size and abs(size.pt-B.TITLE_PT)>.1:
+                        from slide_engine import template_policy as T
+                        fitted_bookend = (T.is_cover(slide) or T.is_closing(slide) or T.is_section(slide)) and size and 20 <= size.pt <= B.TITLE_PT
+                        if sh.name.endswith('|title') and size and abs(size.pt-B.TITLE_PT)>.1 and not fitted_bookend:
                             finding('fail','title_size',f'Title must use {B.TITLE_PT} pt text.')
                         if size and size.pt < B.BODY_MIN_PT:
                             finding('warn','font_size',f'{size.pt:g} pt text is below the body minimum; verify its citation/caption role.')

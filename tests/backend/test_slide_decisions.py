@@ -22,17 +22,22 @@ def test_slide_acceptance_covers_hidden_findings_but_not_other_slides(ai_session
     assert client.post(base+'/decisions',json={**payload,'output_slide':99}).status_code==409
     assert client.post(base+'/decisions',json={**payload,'finding_ids':['output_qa_visual:3']}).status_code==409
     record['checks']['output_qa_accuracy']['status']='error'
-    assert client.post(base+'/decisions',json=payload).status_code==409
+    incomplete=client.post(base+'/decisions',json=payload)
+    assert incomplete.status_code==200
+    assert incomplete.json()['generation']['download_allowed']
+    assert not generations.checks_satisfied(record)
     record['checks']['output_qa_accuracy']['status']='passed'
     result=client.post(base+'/decisions',json=payload)
     assert result.status_code==200
     decision=record['human_decisions'][-1]
     assert set(decision['finding_ids'])=={'output_qa_visual:0','output_qa_visual:1','output_qa_visual:2'}
     assert generations.approved_findings(record)=={'output_qa_visual:0','output_qa_visual:1'}
-    assert not result.json()['generation']['download_allowed']
+    assert result.json()['generation']['download_allowed']
+    assert not generations.checks_satisfied(record)
     assert client.post(base+'/decisions',json={**payload,'output_slide':1}).status_code==200
     assert 'output_qa_visual:2' in generations.approved_findings(record)
-    assert not generations.download_allowed(record)
+    assert generations.download_allowed(record)
+    assert not generations.checks_satisfied(record)
     assert client.post(base+'/decisions',json={**payload,'output_slide':2}).json()['generation']['download_allowed']
     assert record['checks']['output_qa_visual']['status']=='failed'
     record['candidate_sha256']='changed'
@@ -43,6 +48,30 @@ def test_priority_is_derived_from_materiality_not_client_input():
     assert generations.finding_priority({'severity':'warning'})=='low'
     for severity in ('blocking','review','optional_pending',None):
         assert generations.finding_priority({'severity':severity,'priority':'low'})=='high'
+
+
+def test_slide_dismissal_accepts_completed_findings_but_keeps_api_error(ai_session):
+    record=generations.build(ai_session,mode='ai')
+    for name in generations.required_checks(record):
+        generations.add_check(record,name,{'status':'passed','findings':[]})
+    generations.add_check(record,'output_qa_visual',{'status':'needs_review','findings':[
+        {'severity':'review','output_slide':0,'message':'Inspect title'},
+        {'severity':'warning','output_slide':0,'message':'Optional spacing'}]})
+    generations.add_check(record,'ai_redesign',{'status':'error','findings':[
+        {'severity':'blocking','output_slide':0,'message':'Provider billing failure'}]})
+    generations.settle(record)
+    client=TestClient(app);base=f'/api/sessions/{ai_session.id}'
+    payload={'generation_id':record['generation_id'],'candidate_sha256':record['candidate_sha256'],
+             'output_slide':0,'rationale':'Reviewed title and spacing'}
+    result=client.post(base+'/decisions',json=payload)
+    assert result.status_code==200
+    assert set(record['human_decisions'][-1]['finding_ids'])=={'output_qa_visual:0','output_qa_visual:1'}
+    assert result.json()['generation']['download_allowed']
+    assert not generations.checks_satisfied(record)
+    error=next(f for f in result.json()['generation']['findings'] if f['check']=='ai_redesign')
+    assert not error['can_approve']
+    assert client.post(base+'/decisions',json={**payload,'output_slide':None,'finding_ids':[error['id']]}).status_code==409
+    assert client.get(base+'/download',params={'generation_id':record['generation_id']}).status_code==200
 
 
 def test_only_low_priority_findings_do_not_block(ai_session):
@@ -56,4 +85,5 @@ def test_only_low_priority_findings_do_not_block(ai_session):
     assert public['download_allowed'] and public['findings'][0]['priority']=='low'
     record['checks']['output_qa_visual']['status']='error'
     generations.settle(record)
-    assert not generations.download_allowed(record)
+    assert generations.download_allowed(record)
+    assert not generations.checks_satisfied(record)

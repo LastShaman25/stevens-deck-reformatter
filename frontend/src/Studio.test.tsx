@@ -59,3 +59,29 @@ test('outline approval is required and edits invalidate generation',async()=>{
   fireEvent.change(screen.getByLabelText('Slide 1 title'),{target:{value:'Updated opening'}});
   expect(screen.getByRole('button',{name:'2. Generate and verify'})).toBeDisabled();
 });
+
+test('developer opens a job before inspecting activity and token breakdown',async()=>{
+  const job={job_id:'job123',started_at:'2026-10-01T16:00:00+00:00',updated_at:'2026-10-01T16:00:02+00:00',status:'completed',workflow:'reformat',input_category:'pdf',output_category:'pptx / pdf',duration_ms:1234,input_tokens:100,output_tokens:20,tokens:120,requests:1,event_count:1,usage_complete:true};
+  const fetcher=vi.fn((url:string)=>response(url==='/api/auth/status'?{...auth,user:{...user,role:'developer'}}:url==='/api/developer/jobs'?{jobs:[job]}:{events:[{id:'e',timestamp:job.started_at,job_id:'job123',agent:'reviewer',action:'request_attempt',status:'completed',model:'test-model',duration_ms:1234,input_tokens:100,output_tokens:20}],next_before:null}));
+  vi.stubGlobal('fetch',fetcher);
+  render(<Studio/>);fireEvent.click(await screen.findByRole('button',{name:'Developer activity'}));
+  expect(await screen.findByRole('button',{name:'Open job job123'})).toBeVisible();
+  expect(screen.queryByText('reviewer')).not.toBeInTheDocument();
+  expect(fetcher.mock.calls.some(([url])=>url.startsWith('/api/developer/activity'))).toBe(false);
+  expect(screen.getByText('120')).toBeVisible();
+  fireEvent.click(screen.getByRole('button',{name:'Open job job123'}));
+  expect(await screen.findByText('reviewer')).toBeVisible();
+  expect(screen.getByText('test-model')).toBeVisible();
+  expect(screen.getByText('Input tokens: 100')).toBeVisible();
+  expect(screen.getByText('Output tokens: 20')).toBeVisible();
+  expect(document.querySelector('time')).toHaveAttribute('datetime',job.started_at);
+  expect(screen.queryByRole('button',{name:'Manage users'})).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button',{name:'Back to jobs'}));
+  expect(await screen.findByRole('button',{name:'Open job job123'})).toBeVisible();
+});
+
+test('member does not see developer controls',async()=>{
+  vi.stubGlobal('fetch',vi.fn(()=>response({...auth,user:{...user,role:'member'}})));
+  render(<Studio/>);await screen.findByRole('button',{name:/Use my PowerPoint/});
+  expect(screen.queryByRole('button',{name:'Developer activity'})).not.toBeInTheDocument();
+});
