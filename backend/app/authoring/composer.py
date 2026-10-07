@@ -26,6 +26,38 @@ def text(shape, lines, size):
         p.space_after = Pt(14)
 
 
+def bookend_text(slide, content, closing=False):
+    """One geometry/typography path for both preflight and final composition."""
+    from .text_fit import fit_bookend_body, fit_cover_title
+    title = slide.shapes.add_textbox(*(Inches(v) for v in (T.CLOSING_TITLE if closing else T.COVER_TITLE)))
+    title.name = 'authored-title'
+    text(title, [content.title], 40)
+    fit_cover_title(title)
+    body = slide.shapes.add_textbox(*(Inches(v) for v in (T.CLOSING_DETAILS if closing else T.COVER_DETAILS)))
+    body.name = 'authored-body'
+    text(body, content.bullets, 20)
+    fit_bookend_body(body)
+    for shape in (title, body):
+        for paragraph in shape.text_frame.paragraphs:
+            paragraph.font.color.rgb = RGBColor.from_string(brand.WHITE)
+    return title, body
+
+
+def validate_bookend(content, kind):
+    if kind not in ('opening', 'closing'):
+        return
+    if any(getattr(content, field) is not None for field in
+           ('chart', 'plot', 'equation', 'figure_page', 'table', 'diagram')):
+        raise ValueError(f'{kind.capitalize()} slide {content.id} uses the template artwork and text only. '
+                         'Keep teaching visuals on approved content slides.')
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    try:
+        bookend_text(slide, content, closing=kind == 'closing')
+    except ValueError as exc:
+        raise ValueError(f'{kind.capitalize()} slide {content.id}: {exc}') from exc
+
+
 def compose(spec, path, assets, pages=(), kinds=None):
     assets = Path(assets); assets.mkdir(parents=True, exist_ok=True)
     prs = Presentation(templates.path())
@@ -49,20 +81,19 @@ def compose(spec, path, assets, pages=(), kinds=None):
         slide = prs.slides.add_slide(cover_layout if index==0 else closing_layout if closing else layout)
         for sh in list(slide.shapes):
             sh._element.getparent().remove(sh._element)
-        title = slide.shapes.add_textbox(*(Inches(v) for v in (T.CLOSING_TITLE if closing else T.COVER_TITLE if bookend else (*T.CONTENT[:3],1.4))))
-        title.name = 'authored-title'
-        text(title, [content.title], 40)
         content_height=4.4 if templates.current_id()=='stevens' else T.CONTENT[1]+T.CONTENT[3]-2
         visual = any(v is not None for v in (content.chart, content.plot, content.equation, content.figure_page, content.table, content.diagram))
-        body = slide.shapes.add_textbox(*(Inches(v) for v in (T.CLOSING_DETAILS if closing else T.COVER_DETAILS if bookend else (.75,2,4.0 if visual else min(11.5,T.CONTENT[0]+T.CONTENT[2]-.75),content_height))))
-        body.name = 'authored-body'
-        text(body, content.bullets, 20 if sum(map(len, content.bullets)) < 600 else 18)
         if bookend:
-            from .text_fit import fit_bookend_body
-            fit_bookend_body(body)
-            for shape in (title,body):
-                for paragraph in shape.text_frame.paragraphs:
-                    paragraph.font.color.rgb=RGBColor.from_string(brand.WHITE)
+            title, body = bookend_text(slide, content, closing)
+        else:
+            title = slide.shapes.add_textbox(*(Inches(v) for v in (*T.CONTENT[:3],1.4)))
+            title.name = 'authored-title'
+            text(title, [content.title], 40)
+            body = slide.shapes.add_textbox(*(Inches(v) for v in (.75,2,4.0 if visual else min(11.5,T.CONTENT[0]+T.CONTENT[2]-.75),content_height)))
+            body.name = 'authored-body'
+            text(body, content.bullets, 20 if sum(map(len, content.bullets)) < 600 else 18)
+            from .text_fit import fit_content_body
+            fit_content_body(body, preferred_size=20 if sum(map(len,content.bullets))<600 else 18)
         vx,vy,vw,vh=T.COVER_SUPPORT if index==0 else (5,2,min(7.2,T.CONTENT[0]+T.CONTENT[2]-5),min(4.3,content_height))
         image_hash = None
         diagram_shapes = []

@@ -71,7 +71,8 @@ class Annotation(Strict):
 
 class PlotSpec(Strict):
     kind: Literal['function', 'scatter', 'histogram', 'heatmap'] = 'function'
-    functions: list[str] = Field(default_factory=list, max_length=5)
+    functions: list[str] = Field(default_factory=list, max_length=5,
+        description='Expressions in x, pi and e, e.g. sin(x) or (x-1)/2. No y= assignments or undefined parameters. Use explicit numeric values and label illustrative choices.')
     x_min: float = -5
     x_max: float = 5
     x: list[float] = Field(default_factory=list, max_length=2000)
@@ -92,6 +93,8 @@ class PlotSpec(Strict):
             raise ValueError('Heatmap exceeds 50 columns.')
         if len(self.tick_values) != len(self.tick_labels):
             raise ValueError('Tick labels must match tick values.')
+        from .graphics import validate_plot
+        validate_plot(self)
         return self
 
 
@@ -147,6 +150,9 @@ class SlideSpec(Strict):
             raise ValueError('Slide is too dense; shorten it or revise the outline.')
         if sum(x is not None for x in (self.chart, self.plot, self.equation, self.figure_page, self.table, self.diagram)) > 1:
             raise ValueError('Use one major visual per slide.')
+        if self.equation is not None:
+            from .graphics import validate_equation
+            validate_equation(self.equation)
         return self
 
 

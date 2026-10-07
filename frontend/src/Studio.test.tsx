@@ -25,7 +25,7 @@ test('existing deck selection routes to upload while generation has adaptive len
   fireEvent.click(screen.getByRole('button',{name:'Stevens Slide Studio'}));
   fireEvent.click(screen.getByRole('button',{name:/Generate a new presentation/}));
   expect(screen.getByLabelText('Presentation length')).toHaveValue('auto');
-  expect(screen.getAllByRole('option').map(x=>x.textContent)).toContain('Detailed — evidence and examples');
+  expect(screen.getByRole('option',{name:/Detailed/})).toHaveValue('detailed');
   expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
   expect(screen.getByLabelText('Start from')).toHaveValue('topic');
   fireEvent.change(screen.getByLabelText('Start from'),{target:{value:'pdf'}});

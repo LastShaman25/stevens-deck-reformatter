@@ -210,13 +210,36 @@ def build(src_path, out_path, template_path, revisions=None, source_decisions=No
         right=max([source.slide_width]+[r[0]+r[2] for r in rects])
         bottom=max([source.slide_height]+[r[1]+r[3] for r in rects])
         pdf_source = src_slide._element.cSld.get('name') == 'sss:pdf-import'
-        if pdf_source and not cover and rects:
+        support_rects = []
+        if cover and decision:
+            # Removed backgrounds and separately extracted title/details must
+            # not shrink the remaining logo/figure against the old full canvas.
+            # Fit retained support objects together, preserving their geometry.
+            for placement in plan['placements']:
+                _, original = objects[(placement['origin'], placement['shape_id'])]
+                if placement['origin'] == 'slide' and original.shape_id in extracted:
+                    continue
+                if all(v is not None for v in (original.left, original.top, original.width, original.height)):
+                    support_rects.append((original.left, original.top, original.width, original.height))
+        if support_rects:
+            left=min(r[0] for r in support_rects); top=min(r[1] for r in support_rects)
+            right=max(r[0]+r[2] for r in support_rects); bottom=max(r[1]+r[3] for r in support_rects)
+        elif pdf_source and not cover and rects:
             # A PDF's old canvas margins are not content. Fit the surviving
             # content bounds so template furniture does not shrink it twice.
             left=min(r[0] for r in rects); top=min(r[1] for r in rects)
             right=max(r[0]+r[2] for r in rects); bottom=max(r[1]+r[3] for r in rects)
         scale = min(rw/(right-left),rh/(bottom-top))
         if pdf_source and not cover:
+            # Tight content bounds remove old margins, but they must not turn a
+            # sparse PDF page into an enlargement of its raster artwork. Keep
+            # the imported physical size as the upper limit for the whole
+            # related group; native labels and links retain their alignment.
+            # Dense pages can still shrink into the template's safe region.
+            retained = [objects[(p['origin'], p['shape_id'])][1] for p in plan['placements']]
+            if any(child._element.tag == qn('p:pic')
+                   for _, child in inventory.walk_shapes(retained)):
+                scale = min(scale, 1.0)
             sizes=[r.font.size.pt for _,s in objects.values() if s.has_text_frame
                    for p in s.text_frame.paragraphs for r in p.runs if r.font.size]
             if sizes: scale=min(scale,40/max(sizes))
@@ -298,7 +321,7 @@ def build(src_path, out_path, template_path, revisions=None, source_decisions=No
             elif cover and original._element.tag==qn('p:pic') and source_role.get('role')=='image' and not is_logo:
                 # Place the actual picture, not its former whole-slide position.
                 # Multiple related visuals retain their geometry for the planner.
-                if len(cover_pictures)==1:
+                if len(cover_pictures)==1 and len(support_rects)<=1:
                     x,y,w,h=T.COVER_SUPPORT
                     factor=min(Inches(w)/original.width,Inches(h)/original.height)
                     shape.width=int(original.width*factor);shape.height=int(original.height*factor)
@@ -365,6 +388,9 @@ def build(src_path, out_path, template_path, revisions=None, source_decisions=No
                         tf.margin_top=tf.margin_bottom=tf.margin_left=tf.margin_right=0
                     tf.auto_size = MSO_AUTO_SIZE.NONE
                     for p in tf.paragraphs:
+                        if pdf_source and not extracted_role:
+                            from app.pdf_text_spacing import scale_tabs
+                            scale_tabs(p, scale)
                         for r in p.runs:
                             r.font.name = B.FONT
                             r.font.size = Pt(B.TITLE_PT if is_title else (r.font.size or p.font.size or Pt(20)).pt * scale)
@@ -375,7 +401,11 @@ def build(src_path, out_path, template_path, revisions=None, source_decisions=No
                                 if not is_title: r.font.size=Pt(extracted_role.get('font_size',max(16,r.font.size.pt)))
                             elif r.font.color.type is None and not child.has_table:
                                 r.font.color.rgb = RGBColor.from_string(B.INK)
-                            else:
+                            # PDF lines and their raster panels form one source
+                            # composition. Light gray labels on dark plots and
+                            # semantic plot colors must not become dark ink or
+                            # template red just because their glyphs are editable.
+                            elif not pdf_source:
                                 try:
                                     color = r.font.color.rgb
                                     channels = list(color)
@@ -389,8 +419,9 @@ def build(src_path, out_path, template_path, revisions=None, source_decisions=No
                 from app.authoring.text_fit import fit_cover_title
                 fit_cover_title(shape)
         if pdf_source and not cover:
-            from .pdf_text_fit import enlarge_small_text
+            from .pdf_text_fit import enlarge_small_text, fit_native_lines
             enlarge_small_text(dst_slide, plan['placements'], region)
+            fit_native_lines(dst_slide)
         for origin, element in cloned:
             for connection in element.xpath('.//a:stCxn | .//a:endCxn'):
                 key = (origin, connection.get('id'))

@@ -3,7 +3,7 @@ from typing import Literal
 from slide_engine.template_policy import TEMPLATE_ROLE_RULE
 from pydantic import BaseModel, ConfigDict, Field
 
-VERSION = 'visual-planning-16'
+VERSION = 'visual-planning-18'
 Criterion = Literal['content_presence', 'content_accuracy', 'structure_sequence',
                     'spatial_layout', 'visual_legibility', 'graphical_fidelity',
                     'brand_consistency', 'instruction_compliance']
@@ -18,6 +18,28 @@ def channel(criterion):
 
 
 GENERATOR = '''Make the smallest useful change; an already readable slide may remain unchanged.
+The selected destination template_contract and its approved reference images are
+authoritative. Stevens examples below apply only when Stevens is selected. CPE uses
+its supplied dark opening, right-hand branding and white interior; never import
+Stevens red-tower/statue artwork, logo positions or colors into the CPE contract.
+SOURCE DECORATION CLEANUP applies to EVERY redesigned page, including PDF image regions.
+Discard obsolete source-page perimeter frames (including red outlines), page-sized
+fill panels, decorative rules, shadows and ornamental cover backgrounds. Preserve
+the selected destination template artwork. Do not mistake a decorative campus/building
+cover backdrop for a meaningful figure and shrink it into the new cover support box.
+Preserve actual subject photographs, figures, diagrams, equations, chart axes/borders,
+colored teaching annotations, citations and complete source logos. Color alone never
+makes an element decorative. Establish its role using the original and source evidence.
+If obsolete artwork contains required text or a logo, separate and retain that content
+before discarding only the decoration; never erase a composite image indiscriminately.
+For a flattened PDF region, use an evidenced crop/path removal that leaves all meaningful
+pixels intact. If it cannot be separated safely, retain it and report the conflict for
+source-stage repair. A page-image preservation decision does not exempt decorative frames.
+Record removed source IDs/regions and reasons so QA can verify the actual change.
+Do not enlarge small source raster marks or illustrations merely to fill the available
+content box. Preserve or reduce their original display size when enlargement would
+expose low-resolution pixels; retain the complete artwork and its spatial relationships.
+Use clean original artwork when available, never redraw or invent a replacement logo.
 In redesign, preserve the source slide sequence. A final references, attribution, or
 lesson-content page is not automatically a thank-you/closing page. Preserve that source
 page and append the explicitly required Thank you! page using the statue-photo closing
@@ -117,6 +139,43 @@ decorative shapes or extra accents merely to make a different-looking slide. Exp
 specific defect or user instruction motivating changes; keep already-correct areas intact.'''
 
 QA = '''Audit all eight defect categories for every slide, using evidence. For redesign,
+apply the selected destination template_contract and supplied approved references.
+Any Stevens-specific examples below apply only to Stevens. A CPE slide must follow
+its own dark opening/right-panel branding and white interior, without red tower or statue.
+Audit source decoration cleanup on every page, including flattened PDF regions: obsolete
+source-page red outlines, perimeter frames, decorative cover backdrops and ornamental
+panels must not reappear as small inset pages on the destination template. Compare the
+original so a retained source artifact is not described as invented content. Removing
+decoration is correct; missing meaningful diagrams, equations, annotations, captions,
+citations or complete source marks is not. Never demand removal merely because pixels
+are red: semantic arrows, plot borders and equation highlighting must remain.
+A retained source-page frame that conflicts with the destination style belongs ONLY to
+brand_consistency, with defect_key=source_page_frame when that field is in the schema.
+Use one finding for that frame, not another instruction_compliance finding for the same
+removal. A confirmed obsolete decorative cover backdrop belongs to instruction_compliance
+unless a more specific criterion owns the observed defect. For the obsolete backdrop use
+defect_key=obsolete_cover_backdrop when available. Specify the exact affected artifact,
+smallest safe removal and meaningful content that must survive. Do not also penalize
+its consequences under other criteria unless they require independent repairs.
+Bounding-box intersection alone does not prove occlusion: a text box may lie over blank
+pixels in a picture or intentionally label it. Identify the specific visibly obscured
+text/diagram and foreground object before asserting spatial_layout failure. Real lost
+contrast, unreadable lettering, clipping and obstructed figures remain material defects.
+Compare raster lettering and diagram detail with the source at their displayed sizes.
+Report visible degradation caused by enlargement as visual_legibility, identifying the
+affected image and a size or original-artwork correction; unchanged copy is not lost content.
+Deck synthesis should cite the existing slide-level findings in its summary rather than
+emit duplicates. Emit a new finding only for new evidence, newly affected slides or a
+changed severity; keep the same primary criterion and defect identity as the earlier audit.
+Do not merge unrelated fixes (such as bullet spacing and frame removal) into one correction.
+An adverse finding may receive a bounded focused confirmation against its exact original
+and candidate pair. This is an evidence check, never a waiver or an instruction to pass.
+Only direct high-confidence refutation of the actual claim, with substantive observations
+from both images and the original acceptance condition already satisfied, can remove it.
+Uncertainty, incomplete evidence, provider failure and exhausted confirmation budget keep
+the finding and severity intact. An inherited crop is not introduced loss, but it does not
+waive genuinely unreadable essential content or authorize weakening an acceptance condition.
+For redesign,
 the supplied original is the evidence for content fidelity. An unchanged source claim
 is supported as a faithful transfer; this is not an independent endorsement of its
 universal truth. Do not demand external citations or research solely because a source

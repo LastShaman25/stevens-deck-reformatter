@@ -40,6 +40,20 @@ test('completed QA with cosmetic suggestions enables download and labels them no
   expect(screen.queryByText(/Manual approval cannot clear this finding/)).not.toBeInTheDocument();
 });
 
+test('focused QA explains retained findings without presenting a full pass',async()=>{
+  const generation={generation_id:'g',candidate_sha256:'abc',mode:'preserve',state:'failed',download_allowed:true,
+    built_slides:1,checks:{output_qa_visual:{status:'failed'}},
+    qa_execution:{requests:5,reviewed_slides:1,total_slides:1,complete:true,error:'',confirmation_cases:1,refuted_findings:1},
+    findings:[{id:'qa:0',check:'output_qa_visual',code:'OUTPUT_VISUAL',output_slide:0,severity:'blocking',
+      message:'Some chart labels are clipped.',confirmation_notes:[{ordinal:1,verdict:'confirmed',comparison:'The original already clips these labels; they remain unreadable in the candidate.'}]}],
+    human_decisions:[],source_to_output_slides:{'0':[0]},corrections:[]};
+  vi.stubGlobal('fetch',vi.fn(()=>response({...session,generation})));render(<App/>);
+  expect(await screen.findByText(/1 finding disproved/)).toBeVisible();
+  expect(screen.getByText(/Focused recheck: The original already clips/)).toBeVisible();
+  expect(screen.getByText('failed',{selector:'p[role="status"]'})).toBeVisible();
+  expect(screen.getByText(/Completion does not mean every check passed/)).toBeVisible();
+});
+
 test('added closing has its own output preview without claiming it was a source page',async()=>{
   const generation={generation_id:'g',candidate_sha256:'abc',mode:'ai',state:'ready',download_allowed:true,
     built_slides:2,checks:{},findings:[{id:'closing',code:'VISUAL',message:'Closing finding only',severity:'warning',output_slide:1}],human_decisions:[],source_to_output_slides:{'0':[0]},corrections:[],
@@ -126,7 +140,7 @@ test('local formatting sends preserve mode and displays QA failures',async()=>{
   await screen.findByText(/claude-test/);
   expect(screen.queryByRole('combobox',{name:'Generation mode'})).not.toBeInTheDocument();
   expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
-  expect(screen.getByText(/Applies the selected template locally/)).toBeVisible();
+  expect(screen.getByText(/Applies the selected template, removes confirmed source decoration/)).toBeVisible();
   fireEvent.click(screen.getByRole('button',{name:'Format + QA'}));
   await screen.findByText('Provider timed out');
   fireEvent.click(screen.getByText('Deck-wide findings (1)'));

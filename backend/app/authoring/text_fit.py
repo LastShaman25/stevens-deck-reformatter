@@ -51,7 +51,32 @@ def fit_bookend_body(shape):
             p.space_before = Pt(0)
             p.space_after = Pt(8 if i+1 < len(paragraphs) else 0)
         return
-    raise ValueError('Opening/closing text cannot fit readably in the template. Shorten the points and retry.')
+    raise ValueError('The details do not fit the selected template at a readable size. '
+                     'Condense the visible introduction or takeaways and retain the full explanation in speaker notes. '
+                     'Keep the approved title and meaning; do not add slides.')
+
+
+def fit_content_body(shape, preferred_size=20):
+    """Fit the actual body column; character count alone misses narrow columns."""
+    tf = shape.text_frame
+    width = (shape.width-tf.margin_left-tf.margin_right)/12700
+    height = (shape.height-tf.margin_top-tf.margin_bottom)/12700
+    paragraphs = list(tf.paragraphs)
+    for size in range(preferred_size, 15, -1):
+        lines = sum(wrapped_lines(p.text, font(size), width) for p in paragraphs)
+        # Explicit line/paragraph spacing prevents inherited template metrics
+        # from spilling otherwise bounded text across the protected footer.
+        for gap in (10, 8, 6):
+            if lines*size*1.2 + max(0,len(paragraphs)-1)*gap > height*.94:
+                continue
+            tf.auto_size = MSO_AUTO_SIZE.NONE
+            for i,p in enumerate(paragraphs):
+                p.font.size = Pt(size)
+                p.line_spacing = Pt(size*1.2)
+                p.space_before = Pt(0)
+                p.space_after = Pt(gap if i+1<len(paragraphs) else 0)
+            return
+    raise ValueError('Body text cannot fit readably in its template region. Shorten the points or split the slide.')
 
 
 def fit_cover_title(shape):

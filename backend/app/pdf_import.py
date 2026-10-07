@@ -92,6 +92,8 @@ def convert(pdf_path, pptx_path, preview_path):
         canvas_w,canvas_h=(v/914400 for v in CANVAS)
         evidence=[];characters=0
         repeated = pdf_regions.repeated_footer(doc)
+        frame_keys = pdf_regions.repeated_frames(doc)
+        edge_shadows = pdf_regions.repeated_edge_shadows(doc)
         for i,page in enumerate(doc):
             if page.first_widget or page.first_annot:
                 raise ValueError(f'PDF page {i+1} has form fields or annotations; flatten them in your PDF editor first.')
@@ -112,12 +114,30 @@ def convert(pdf_path, pptx_path, preview_path):
             slide=prs.slides.add_slide(prs.slide_layouts[6])
             slide._element.cSld.set('name','sss:pdf-import')
             page.get_pixmap(matrix=fitz.Matrix(min(2,1600/max(size.width,size.height)),min(2,1600/max(size.width,size.height))),alpha=False).save(preview_path(i))
+            drawings=page.get_drawings()
+            frames=[d for d in drawings if pdf_regions.frame_key(d,size) in frame_keys]
+            # Delete only an independently identified native perimeter path.
+            # This happens before image/font grouping so a frame cannot merge
+            # unrelated page content into a shrunken old-slide inset.
+            frame_layer=fitz.open(); frame_layer.insert_pdf(doc,from_page=i,to_page=i)
+            frame_page=frame_layer[0]
+            removed_frames=remove_paths(frame_page,frames,stroke_only=True)
+            if removed_frames != len(frames):
+                # Unsupported/embedded streams remain intact; do not claim a
+                # cleanup or exclude a region whose path we could not remove.
+                frames=[]; removed_frames=0
+                frame_layer.close()
+                frame_layer=fitz.open(); frame_layer.insert_pdf(doc,from_page=i,to_page=i)
+                frame_page=frame_layer[0]
+            frame_evidence={'page_frames':len(frames),'page_frame_bounds':[list(path_bounds(d)) for d in frames],
+                            'removed_page_frame_paths':removed_frames,
+                            'repeated_edge_shadow_bounds':[]}
             if not source_text.strip():
                 # Visible equations, diagrams and scans need not have PDF text.
                 # Preserve their composition before any text/chrome heuristics.
                 # Bound the raster size for unusually large PDF page dimensions.
                 resolution = min(3,3000/max(size.width,size.height))
-                pix = page.get_pixmap(matrix=fitz.Matrix(resolution,resolution),alpha=False)
+                pix = frame_page.get_pixmap(matrix=fitz.Matrix(resolution,resolution),alpha=False)
                 blob = pix.tobytes('png')
                 picture = slide.shapes.add_picture(BytesIO(blob),*box(size))
                 picture.name = f'PDF page {i+1} preserved page image (no text layer)'
@@ -132,10 +152,11 @@ def convert(pdf_path, pptx_path, preview_path):
                     'visible_content_bounds':list(size),
                     'excluded_chrome':{'repeated_footer_text':[],'navigation_links':0,
                         'decorative_paths':0,'navigation_path_bounds':[],
-                        'removed_native_paths':0,'title_shadow_images':0},
-                    'preservation':'No extractable PDF text layer. Entire page preserved as an image; labels and equations are not individually editable. No OCR was performed.'})
+                        'removed_native_paths':0,'title_shadow_images':0,**frame_evidence},
+                    'preservation':'No extractable PDF text layer. Page preserved as an image after confirmed decorative perimeter removal; labels and equations are not individually editable. No OCR was performed.'})
+                frame_layer.close()
                 continue
-            drawings=page.get_drawings()
+            frame_layer.close()
             links=page.get_links()
             footer_lines, footer_drawings, nav_links = pdf_regions.chrome(page, blocks, drawings, repeated)
             page_numbers = [line for line in lines if compact(pdf_regions.text(line)) == str(i+1)
@@ -147,7 +168,7 @@ def convert(pdf_path, pptx_path, preview_path):
             title_lines = pdf_regions.cover_title(blocks, footer_lines) if i == 0 else []
             backdrop, shadows = pdf_regions.title_backdrop(page, title_lines, lines, drawings,
                 [b for b in blocks if b['type'] == 1]) if i == 0 else ([], [])
-            excluded_drawings = footer_drawings + backdrop
+            excluded_drawings = footer_drawings + backdrop + frames
             content_rect = fitz.Rect(size)
             bands = [fitz.Rect(d['rect']) for d in footer_drawings if d.get('fill') is not None
                      and d.get('fill_opacity',1) == 1
@@ -177,7 +198,26 @@ def convert(pdf_path, pptx_path, preview_path):
                 (d.get('fill') is not None and (d.get('fill_opacity') or 0)>0) or
                 (d.get('color') is not None and (d.get('stroke_opacity') or 0)>0)]
             graphic_boxes=[fitz.Rect(d['rect'])+(-.5,-.5,.5,.5) for d in visible_drawings if d not in full_fills and d not in underline_drawings and d not in excluded_drawings]
-            graphic_boxes += [b['bbox'] for b in blocks if b['type']==1 and b not in shadows]
+            # Text extraction's image blocks omit placements whose un-clipped
+            # bitmap bounds extend beyond the page. Those can contain an entire
+            # clipped plot, heading or diagram. Inventory rendered placements
+            # independently, then let the original PDF clipping/masks govern
+            # their pixels when the complete graphic region is rasterized.
+            image_info=page.get_image_info()
+            # Only omit an independently isolated strip. If its pixels can be
+            # part of another preserved region, retain it rather than claim a
+            # cleanup or blank nearby content. Whole-page image fallback stays
+            # intact, including any inseparable edge shading.
+            omitted_edge_shadows=[bounds for bounds in edge_shadows.get(i,[])
+                if not any(fitz.Rect(bounds).intersects(fitz.Rect(other))
+                           for other in graphic_boxes+[line['bbox'] for line in lines]+
+                           [image['bbox'] for image in image_info if tuple(image['bbox'])!=bounds])]
+            frame_evidence['repeated_edge_shadow_bounds']=omitted_edge_shadows
+            graphic_boxes += [rect for image in image_info
+                              if not any(all(abs(a-b)<.01 for a,b in zip(image['bbox'],shadow['bbox']))
+                                         for shadow in shadows)
+                              if tuple(image['bbox']) not in omitted_edge_shadows
+                              if not (rect := fitz.Rect(image['bbox']) & size).is_empty]
             font_seeds = [line for line in lines if i > 0 and pdf_regions.needs_source_font(line)]
             # Keep the original narrow non-Unicode fallback when no font region
             # is needed. Complex embedded fonts use whole-object closure.
@@ -189,7 +229,8 @@ def convert(pdf_path, pptx_path, preview_path):
             # vector graphics retain source pixels and layer order within each region.
             layer=fitz.open();layer.insert_pdf(doc,from_page=i,to_page=i)
             graphic_page=layer[0]
-            remove_paths(graphic_page, excluded_drawings)
+            remove_paths(graphic_page, [d for d in excluded_drawings if d not in frames])
+            remove_paths(graphic_page, frames,stroke_only=True)
             for line in pdf_regions.lines(blocks): graphic_page.add_redact_annot(line['bbox'],fill=False)
             graphic_page.apply_redactions(images=0,graphics=0,text=0)
             for drawing in underline_drawings:
@@ -197,6 +238,18 @@ def convert(pdf_path, pptx_path, preview_path):
             if underline_drawings:
                 graphic_page.apply_redactions(images=0,graphics=1,text=1)
             graphic_count=0
+            cover_evidence=[]
+            if i == 0 and not faithful and not any(needs_glyph_image(line) for line in lines):
+                from .pdf_cover import graphics as cover_graphics
+                separated=cover_graphics(page,blocks,drawings,excluded_drawings)
+                if separated:
+                    for item in separated:
+                        picture=slide.shapes.add_picture(BytesIO(item['blob']),*box(item['bounds']))
+                        picture.name=f'PDF page 1 independent cover graphic {graphic_count+1}'
+                        picture._element.xpath('.//p:cNvPr')[0].set('descr',item['description'])
+                        cover_evidence.append(item['evidence'])
+                        graphic_count+=1
+                    graphic_boxes=[]
             for rect in regions(graphic_boxes):
                 rect=(rect+(-.5,-.5,.5,.5)) & content_rect
                 if rect.is_empty: continue
@@ -229,6 +282,7 @@ def convert(pdf_path, pptx_path, preview_path):
             # Remove only confirmed furniture on a private copy, preserving all
             # text and images; otherwise raster fallback reintroduces that chrome.
             removed_paths = remove_paths(content_page, footer_drawings)
+            remove_paths(content_page,frames,stroke_only=True)
             for rect in faithful:
                 rect = rect & size
                 pix = content_page.get_pixmap(matrix=fitz.Matrix(3,3),clip=rect,alpha=False)
@@ -238,17 +292,19 @@ def convert(pdf_path, pptx_path, preview_path):
                 picture.name = f'PDF page {i+1} source-font region {graphic_count+1}'
                 font_evidence.append({'bounds':list(actual),'image_sha256':hashlib.sha256(blob).hexdigest()})
                 graphic_count += 1
-            content_layer.close()
             glyph_lines=[line for line in lines if line not in faithful_lines and needs_glyph_image(line)]
             for line in glyph_lines:
                 rect=fitz.Rect(line['bbox']) & size
-                pix=page.get_pixmap(matrix=fitz.Matrix(3,3),clip=rect,alpha=True)
+                pix=content_page.get_pixmap(matrix=fitz.Matrix(3,3),clip=rect,alpha=True)
                 # Use the rounded raster bounds so the source glyphs stay aligned.
                 rect=fitz.Rect(pix.x/3,pix.y/3,(pix.x+pix.width)/3,(pix.y+pix.height)/3)
                 picture=slide.shapes.add_picture(BytesIO(pix.tobytes('png')),*box(rect))
                 picture.name=f'PDF page {i+1} preserved text glyphs {graphic_count+1}'
                 graphic_count+=1
+            content_layer.close()
             editable_lines=[line for line in lines if line not in faithful_lines and not needs_glyph_image(line)]
+            from .pdf_text_spacing import bullet_tabs, apply_bullet_tab
+            bullet_offsets=bullet_tabs(page,editable_lines)
             textboxes=[]
             title_shape = None
             for line in editable_lines:
@@ -268,13 +324,15 @@ def convert(pdf_path, pptx_path, preview_path):
                 # scripts often have ordinary digits at a displaced PDF origin.
                 main=max(line['spans'],key=lambda s:s['size'])
                 baseline=main['origin'][1]
-                for span in line['spans']:
+                spaced_spans=(apply_bullet_tab(paragraph,line['spans'],bullet_offsets[id(line)],scale)
+                              if id(line) in bullet_offsets else line['spans'])
+                for original_span,span in zip(line['spans'],spaced_spans):
                     run=paragraph.add_run();run.text=span['text']
                     run.font.name=span['font'].split('+')[-1]
                     run.font.size=Pt(max(1,span['size']*scale*72))
                     run.font.bold=bool(span['flags'] & 16);run.font.italic=bool(span['flags'] & 2)
                     run.font.color.rgb=RGBColor.from_string(f"{span['color']:06X}")
-                    if id(span) in underlined_spans: run.font.underline=True
+                    if id(original_span) in underlined_spans: run.font.underline=True
                     shift=baseline-span['origin'][1]
                     if abs(shift)>.25:
                         # PowerPoint automatically renders shifted runs at 2/3
@@ -287,15 +345,17 @@ def convert(pdf_path, pptx_path, preview_path):
             evidence.append({'page':i+1,'text':source_text,'graphics':graphic_count,'links':len(links),
                              'editable_text':''.join(s['text'] for line in editable_lines for s in line['spans']),
                              'native_link_underlines':len(underlined_spans),
+                             'native_bullet_tabs':len(bullet_offsets),
                              'rasterized_text_lines':len(glyph_lines)+len(faithful_lines),
                              'source_font_regions':len(faithful),
                              'source_font_evidence':font_evidence,
+                             'independent_cover_graphics':cover_evidence,
                              'visible_content_bounds':list(content_rect),
                              'excluded_chrome':{'repeated_footer_text':[pdf_regions.text(l) for l in footer_lines],
                                  'navigation_links':len(nav_links),'decorative_paths':len(excluded_drawings),
                                  'navigation_path_bounds':[list(path_bounds(d)) for d in footer_drawings],
                                  'removed_native_paths':removed_paths,
-                                 'title_shadow_images':len(shadows)},
+                                 'title_shadow_images':len(shadows),**frame_evidence},
                              'preservation':'Complex source fonts are preserved as image regions; cover and supported text remain editable.'})
         for slide in prs.slides:
             for shape in slide.shapes:
@@ -314,8 +374,10 @@ def convert(pdf_path, pptx_path, preview_path):
                 'page_evidence':[{'page':p['page'],'text_sha256':hashlib.sha256(p['text'].encode()).hexdigest(),
                                   'graphics':p['graphics'],'links':p['links'],
                                   'native_link_underlines':p['native_link_underlines'],
+                                  'native_bullet_tabs':p.get('native_bullet_tabs',0),
                                   'source_font_regions':p['source_font_regions'],
                                   'source_font_evidence':p['source_font_evidence'],
+                                  'independent_cover_graphics':p.get('independent_cover_graphics',[]),
                                   'page_image_regions':p.get('page_image_regions',0),
                                   'page_image_evidence':p.get('page_image_evidence'),
                                   'visible_content_bounds':p['visible_content_bounds'],

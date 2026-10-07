@@ -21,6 +21,27 @@ def contrast(a,b):
     return (y+.05)/(x+.05)
 
 
+def _clear_image_background(text, picture, text_bounds, picture_bounds):
+    """Only resolve overlap when both artwork and text contrast are known."""
+    for shape in (text,picture):
+        if shape.rotation or shape._element.xpath('./p:spPr/a:xfrm[@flipH="1" or @flipV="1" or @flipH="true" or @flipV="true"]'):
+            return False
+    if text._element.xpath('.//a:effectLst/* | .//a:effectDag | .//a:alpha | .//a:alphaMod | .//a:alphaOff'):
+        return False
+    seen = False
+    for paragraph in text.text_frame.paragraphs:
+        if paragraph.text.strip() and not paragraph.runs:
+            return False
+        for run in paragraph.runs:
+            if not run.text.strip(): continue
+            color = rgb(run.font.color) or rgb(paragraph.font.color)
+            if not color or contrast(color,'FFFFFF') < 4.5:
+                return False
+            seen = True
+    from .geometry import white_picture_background
+    return seen and white_picture_background(picture,text_bounds,picture_bounds)
+
+
 def audit(slide, width, height):
     issues, text_boxes, visuals = [], [], []
 
@@ -29,7 +50,7 @@ def audit(slide, width, height):
                        **({'object_ids':[object_id]} if object_id else {})})
 
     def visit(shapes, transform=lambda l,t,w,h:(l,t,w,h), depth=0, protected=False):
-        for sh in shapes:
+        for z,sh in enumerate(shapes):
             protected_style=protected or sh.name.endswith(('|logo','|code'))
             raw=(sh.left,sh.top,sh.width,sh.height)
             if any(v is None for v in raw):
@@ -58,11 +79,11 @@ def audit(slide, width, height):
             except (AttributeError,TypeError,ValueError):pass
             if sh.has_text_frame:
                 frames.append((sh.text_frame,fill,False))
-                if sh.text_frame.text.strip():text_boxes.append((bounds,sh.shape_id,depth))
+                if sh.text_frame.text.strip():text_boxes.append((bounds,sh,depth,z))
                 if sh._element.xpath('./p:spPr/a:gradFill | ./p:spPr/a:blipFill | ./p:spPr/a:pattFill'):
                     finding('warn','uncertain_background',f'Inspect contrast on the patterned/gradient background of shape {sh.shape_id}.')
             if sh._element.tag == qn('p:pic'):
-                visuals.append((bounds,sh.shape_id))
+                visuals.append((bounds,sh,depth,z))
             if sh.has_chart:
                 finding('warn','chart_style','Native chart data and workbook are preserved; inspect chart typography and visual legibility.')
             if sh.has_table:
@@ -113,11 +134,19 @@ def audit(slide, width, height):
                 if over:finding('warn','overflow',f'Text fit estimate {ratio:.2f}; enlarge the text box and inspect the actual render.',sh.name)
     visit(slide.shapes)
     from .geometry import overlaps
-    for i,(a,aid,ad) in enumerate(text_boxes):
-        for b,bid,bd in text_boxes[i+1:]:
+    for i,(a,ash,ad,az) in enumerate(text_boxes):
+        aid=ash.shape_id
+        for b,bsh,bd,bz in text_boxes[i+1:]:
+            bid=bsh.shape_id
             if overlaps(a,b):
                 finding('warn','occlusion',f'Text shapes {aid} and {bid} intersect; inspect for intentional containment or occlusion.')
-        for b,bid in visuals:
+        for b,bsh,bd,bz in visuals:
+            bid=bsh.shape_id
             if overlaps(a,b):
+                # Root-level, axis-aligned title over a *proven empty* image
+                # area is not a collision. Keep all uncertain/layered/grouped
+                # cases for rendered review, and never waive visible artwork.
+                if ad==bd==0 and bz<az and _clear_image_background(ash,bsh,a,b):
+                    continue
                 finding('warn','visual_occlusion',f'Text shape {aid} intersects image {bid}; inspect its legibility against the visual.')
     return issues

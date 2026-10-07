@@ -36,15 +36,20 @@ def test_native_table_header_contrast_survives_template_and_save(tmp_path):
 
 def test_missing_visual_plan_and_missing_planned_visual_retry(monkeypatch):
     sess=service.create(CreationRequest(topic='Explain a process', audience='Students'))
-    expected=Outline(title='Review', rationale='A process benefits from a diagram.', slides=[planned()])
-    missing=expected.model_dump(); missing['slides'][0]['visual']=None
-    responses=[missing, expected.model_dump()]
+    expected=service.with_bookends(Outline(title='Review', rationale='A process benefits from a diagram.', slides=[planned()])).model_dump()
+    for slide in expected['slides']:
+        slide['unit_ids']=['process'] if slide['kind']=='content' else []
+    import copy
+    missing=copy.deepcopy(expected); missing['slides'][1]['visual']=None
+    content={'units':[{'id':'process','section':'Review','objective':'Explain draft, review, release.',
+                      'kind':'concept','priority':'essential','source_pages':[]}], 'context_pages':[]}
+    responses=[content, missing, expected]
     payloads=[]
     def provider(*args, **kwargs):
         payloads.append(args[2]); return {'status':'completed','data':responses.pop(0)}
     monkeypatch.setattr(service.providers,'generate',provider)
     service.plan(sess)
-    assert 'explicit visual decision' in payloads[1]['repair_instruction']
+    assert 'explicit visual decision' in payloads[2]['repair_instruction']
     item=Outline.model_validate(sess.creation['outline']).slides[1]
     assert item.visual.kind=='diagram'
     responses.extend([SlideSpec(id='body', title=item.title).model_dump(),

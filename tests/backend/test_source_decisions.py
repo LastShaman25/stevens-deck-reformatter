@@ -66,7 +66,13 @@ def test_cover_decoration_rule_does_not_require_forbidden_removal(tmp_path,prote
         p.slides[0].shapes.add_textbox(Inches(1),Inches(5),Inches(4),Inches(1)).text='Required caption'
         p.save(source);p,digest,objects,value=decision(source);art=value['elements'][-1]
     art.update(role='decoration',confidence='high',content_bearing=False,contains_logo=False,artwork_action='retain')
-    if protected=='dependency': value['elements'][0]['related_ids']=[art['id']]
+    if protected=='dependency':
+        # Ordinary captions still need their support; transferred native cover
+        # title/subtitle contrast is supplied by the destination template.
+        p.slides[0].shapes.add_textbox(Inches(1),Inches(5),Inches(4),Inches(1)).text='Required figure caption'
+        p.save(source);p,digest,objects,value=decision(source);art=value['elements'][1]
+        art.update(role='decoration',confidence='high',content_bearing=False,contains_logo=False,artwork_action='retain')
+        value['elements'][-1].update(role='caption',related_ids=[art['id']])
     approved=source_decisions.validate(value,p,0,digest)
     assert art['id'] not in approved.remove_ids
     art['artwork_action']='remove';value['remove_ids']=[art['id']]
@@ -93,7 +99,12 @@ def test_removal_cannot_exempt_protected_source_elements(tmp_path,damage):
     if damage=='text':
         value['elements'][0].update(role='decoration',confidence='high',content_bearing=False)
         value['remove_ids']=[value['elements'][0]['id']]
-    if damage=='dependency':value['elements'][0]['related_ids']=[art['id']]
+    if damage=='dependency':
+        p.slides[0].shapes.add_textbox(Inches(1),Inches(5),Inches(4),Inches(1)).text='Required figure caption'
+        p.save(source);p,digest,objects,value=decision(source);art=value['elements'][1]
+        art.update(role='decoration',confidence='high',content_bearing=False,contains_logo=False,artwork_action='remove')
+        value['remove_ids']=[art['id']]
+        value['elements'][-1].update(role='caption',related_ids=[art['id']])
     with pytest.raises(ValueError):source_decisions.validate(value,p,0,digest)
 
 

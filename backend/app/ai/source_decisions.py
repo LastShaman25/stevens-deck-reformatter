@@ -10,17 +10,23 @@ from . import element_roles, providers, rubric
 SYSTEM = element_roles.SYSTEM + '''
 This is the source-first decision stage. The screenshot and objects are ORIGINAL,
 not a rebuilt candidate. Decide keep_original when this slide already matches the
-Stevens template and is readable (including section and Thank You pages); do not
+SELECTED destination template and is readable (including section and Thank You pages); do not
 shrink it or add another template, logo or frame. Use redesign only for an evidenced
 problem or requested change. All elements must have roles before either decision.
 For every picture/background/decorative element, decide whether it is meaningful
-content, a logo, or redundant template artwork. Keep photographs, figures, code
+content, a logo, or redundant template artwork. Keep meaningful subject photographs, figures, code
 screenshots, diagrams, meaningful annotations and ALL source logos, including small
 top-right wordmarks. Only section headers may omit a separate bottom-left Stevens
 footer wordmark under the explicit user rule. Preserve all other logos. Never remove
 a composite background containing meaningful imagery to remove a footer logo.
-Remove only obsolete/redundant non-content background artwork that would be pasted
-over the destination template (for example a second miniature cover). Mark its role,
+Remove obsolete/redundant non-content background artwork on every redesigned page,
+including source-page perimeter frames/red outlines and decorative cover backdrops
+that would otherwise be pasted over the destination template. A campus/building photo
+used only as the old cover's ornamental backdrop is decoration, not automatically a
+meaningful subject photograph. Decide from its actual role and preserve separate logos
+and all title/subtitle/author text before removing it. Never keep an old-cover thumbnail.
+Keep figures, semantic arrows/highlights, chart borders and equations even when red;
+the removal rule concerns non-content page furniture, not a color filter. Mark its role,
 high confidence, content_bearing=false, contains_logo=false, and explain removal.
 If a picture includes unique information, preserve it. Backgrounds containing only
 obsolete decoration and required branding may use extract_logo below. Ambiguity means keep.
@@ -53,8 +59,14 @@ The supplied source inventory contains root objects, all with parent=null. There
 alignment_reference=parent is invalid here; use slide, related (with IDs), or none.'''
 SYSTEM += '''
 Native links and connector endpoints are protected. Retain objects with has_links_or_connections=true, including PDF navigation hit areas. Also retain groups, text, and backgrounds required by retained content even if they appear decorative. These are exempt from obsolete-art removal.
-For the first page, do not retain obsolete full-slide fill panels, decorative rules
-or old cover backgrounds as inset artwork. Confident non-content decoration must be
+For a redesigned cover, the native title/subtitle/author move to the supplied
+template text regions, whose contrast field replaces their old support panels.
+Remove confidently identified non-content, non-logo panels used only by that
+transferred cover text. Keep the semantic role panel and record removal IDs;
+do not retain a detached gray bar after its text moves. Other diagram, code,
+caption, body-text and logo contrast dependencies remain protected.
+For all pages, do not retain obsolete full-slide fill panels, decorative perimeter frames,
+rules or old cover backgrounds as inset artwork. Confident non-content decoration must be
 removed with explicit IDs. A meaningful photograph remains an image, separate from
 the background, and fills the cover support region at its original aspect ratio.
 All visible title/subtitle/author text must be classified before composition. Inspect
@@ -146,15 +158,18 @@ def validate(value,prs,index,digest,require_logo_review=True):
     if decision.slide_kind=='closing' and decision.action=='keep_original' and prs.slides[index].slide_layout.name!=T.CLOSING_LAYOUT:
         raise ValueError('A kept closing page must use the approved statue-photo closing layout; otherwise choose redesign.')
     cover_map={}
+    replaced_cover_text=set()
     if index==0 and decision.action=='redesign':
         from slide_engine.template_policy import cover_roles
         cover_map=cover_roles(prs.slides[index],prs.slide_height,decision.model_dump())
+        replaced_cover_text={o['id'] for o in objects if o['origin']=='slide' and o['shape_id'] in cover_map
+                             and roles[o['id']].role in ('title','subtitle','author')}
         # An AI role label cannot override native links, text, groups, or content
         # dependencies. Requiring removal of protected artwork creates an
         # impossible retry: retain is rejected here and remove is rejected below.
-        obsolete=[e.id for e in decision.elements if e.role in ('background','decoration')
+        obsolete=[e.id for e in decision.elements if e.role in ('background','decoration','panel')
                   and e.confidence=='high' and not e.content_bearing and not e.contains_logo
-                  and e.artwork_action=='retain' and not removal_protection(e.id,objects,prs,index,decision)]
+                  and e.artwork_action=='retain' and not removal_protection(e.id,objects,prs,index,decision,replaced_cover_text)]
         if obsolete:
             raise ValueError('Cover redesign must remove confidently identified obsolete non-content background/decorative artwork, with explicit removal IDs; never retain an old-cover inset. Correct artwork_action and remove_ids for: '+', '.join(obsolete))
     extraction_ids=[e.source_id for e in decision.logo_extractions]
@@ -193,26 +208,38 @@ def validate(value,prs,index,digest,require_logo_review=True):
         role=roles.get(sid)
         obj=next(o for o in objects if o['id']==sid)
         section_footer=section_footer_removal(decision,role,obj,prs)
-        if not section_footer and (not role or role.role not in ('background','decoration','image') or role.confidence!='high' or role.content_bearing or role.contains_logo):
-            raise ValueError('Only confidently identified non-content, non-logo artwork may be removed.')
+        if not section_footer and (not role or role.role not in ('background','decoration','image','panel') or role.confidence!='high' or role.content_bearing or role.contains_logo):
+            state=(f'role={role.role}, confidence={role.confidence}, '
+                   f'content_bearing={role.content_bearing}, contains_logo={role.contains_logo}, '
+                   f'artwork_action={role.artwork_action}' if role else 'missing element classification')
+            raise ValueError('Only confidently identified non-content, non-logo artwork may be removed. '
+                             f'Rejected {sid}: {state}. Allowed removal roles: background, decoration, image, panel; '
+                             'requires confidence=high, content_bearing=false, contains_logo=false. '
+                             'Retain protected/uncertain content. Correct classification only when supported '
+                             'by the original slide and the separate raw image; never relabel a logo or '
+                             'meaningful content just to permit removal.')
         if obj['kind'] not in ('picture','shape') or (obj['content'].strip() and not section_footer):
-            raise ValueError('Cannot remove text, groups, tables or charts as decoration.')
+            raise ValueError(f'Cannot remove text, groups, tables or charts as decoration. Rejected {sid}: '
+                             f"kind={obj['kind']}, has_native_text={bool(obj['content'].strip())}. Retain this object.")
         shape=next(s for origin,_,s in inventory.source_objects(prs.slides[index]) if origin==obj['origin'] and s.shape_id==obj['shape_id'])
         if shape._element.xpath('.//a:hlinkClick | .//a:hlinkMouseOver | .//a:stCxn | .//a:endCxn'):
-            raise ValueError('Linked or connected artwork cannot be removed.')
-        if any(sid in e.related_ids and e.id not in decision.remove_ids for e in decision.elements):
-            raise ValueError('Retained content depends on the proposed removed artwork.')
+            raise ValueError(f'Linked or connected artwork cannot be removed. Retain {sid}.')
+        dependents=[e.id for e in decision.elements if sid in e.related_ids
+                    and e.id not in decision.remove_ids and e.id not in replaced_cover_text]
+        if dependents:
+            raise ValueError(f'Retained content depends on the proposed removed artwork {sid}. '
+                             'Dependent IDs: '+', '.join(dependents)+'. Retain its required support.')
     return decision
 
 
-def removal_protection(sid,objects,prs,index,decision):
+def removal_protection(sid,objects,prs,index,decision,replaced_text=()):
     obj=next(o for o in objects if o['id']==sid)
     if obj['kind'] not in ('picture','shape') or obj['content'].strip(): return 'native content'
     shape=next(s for origin,_,s in inventory.source_objects(prs.slides[index])
                if origin==obj['origin'] and s.shape_id==obj['shape_id'])
     if shape._element.xpath('.//a:hlinkClick | .//a:hlinkMouseOver | .//a:stCxn | .//a:endCxn'):
         return 'link or connection'
-    if any(sid in e.related_ids and e.id not in decision.remove_ids for e in decision.elements):
+    if any(sid in e.related_ids and e.id not in decision.remove_ids and e.id not in replaced_text for e in decision.elements):
         return 'retained content dependency'
     return None
 
@@ -265,7 +292,10 @@ def run(sess,progress,generate=providers.generate,template_images=(),indices=Non
                 path=inspection/f'{i}-{origin}-{shape.shape_id}-raw.png';raw.save(path)
                 # Known compound branding needs raw pixels. Ordinary photos are
                 # already visible on the full source screenshot.
-                if obj['suggested_logo_regions'] and len(raw_images)<4:
+                # Independent PDF cover layers must be inspected separately:
+                # the composited original can put a protected logo over a
+                # removable photograph even though neither raw image is mixed.
+                if (obj['suggested_logo_regions'] or (i==0 and getattr(sess,'pdf_import',None))) and len(raw_images)<8:
                     raw_images.append((f'FULL RAW IMAGE {sid}; extraction coordinates 0..1000',path))
             except ValueError: pass
         wanted={T.OPENING_LAYOUT} if i==0 else {T.CONTENT_LAYOUT,'Title and Content',T.SECTION_LAYOUT,T.CLOSING_LAYOUT}
@@ -325,7 +355,7 @@ def run(sess,progress,generate=providers.generate,template_images=(),indices=Non
                         'annotation or foreground contrast dependency may be lost. Check crop edges, clear space, unwanted '
                         'artwork and readability. Background-only removal can include decorative rules, stars and faint '
                         'watermarks from obsolete template artwork; it does not mean only a uniform solid color. '
-                        'Native cover title/subtitle/author move onto the required template red field, which replaces '
+                        'Native cover title/subtitle/author move onto the selected template text regions, which replace '
                         'their source contrast background. Other meaningful content must still be protected. '
                         'The crop intentionally retains a thin flat-color source border; transparency is not required. '
                         'background_only_removed judges the discarded area outside the crop, not that allowed border. '

@@ -56,6 +56,7 @@ export function FindingsList({findings, resolved, busy, onApprove, deckWide=fals
           {visible.map(f=><li key={f.id} className="py-3 text-sm">
             <div className="flex flex-wrap justify-between gap-2"><b>{f.code?.replace(/_/g,' ')}</b><span className={low(f)?'text-stevens-gray':'text-stevens-red'}>{accepted(f,slide)?'Accepted by human review':low(f)?'Low priority · does not block download':'High priority · needs correction'}</span></div>
             {typeof slide==='number' && onNavigate?<button className="mt-1 block text-left hover:underline focus-visible:underline" disabled={busy} onClick={()=>onNavigate(slide)}>{f.message}</button>:<p className="mt-1">{f.message}</p>}
+            {f.confirmation_notes?.filter(n=>slide==='deck' || n.ordinal===slide+1).map((note,index)=><p key={index} className="mt-2 text-stevens-gray">Focused recheck: {note.comparison}</p>)}
           </li>)}
         </ul>
       </section>;

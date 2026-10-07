@@ -14,7 +14,7 @@ from slide_engine.preserve import CoverageError
 from . import grounded
 from .qa import artifact_coverage, brand_lint, render_verify
 
-POLICY_VERSION = 'local-advisory-qa-33'
+POLICY_VERSION = 'local-advisory-qa-34'
 REQUIRED = ('plan_coverage', 'artifact_coverage', 'structural_formatting', 'render_verification')
 QA_REQUIRED = ('ai_visual_review', 'output_qa_coverage', 'output_qa_sequence',
                'output_qa_accuracy', 'output_qa_visual')
@@ -224,8 +224,24 @@ def build(sess, mode='preserve', repair_passes=1):
                 raise ValueError('PDF import changed; upload the original PDF again.')
             record['pdf_import']=receipt
             add_check(record,'pdf_import',{'status':'passed','findings':[]})
+        cover_decisions = {}
+        if mode == 'preserve':
+            from .ai import cover_preparation
+            if cover_preparation.needed(sess):
+                def cover_progress(**value):
+                    activity.emit('pipeline', value.get('stage', 'progress'), 'progress', sess)
+                    record['progress'] = value
+                    save(record)
+                with activity.stage('formatter', 'prepare_cover_artwork', sess):
+                    cover_decisions, details = cover_preparation.run(sess, directory, cover_progress)
+                record['optional_ai']['cover_preparation'] = details
+                if details['status'] != 'completed':
+                    add_check(record, 'source_artwork_preparation', {'status': 'needs_review', 'findings': [{
+                        'code': 'SOURCE_ARTWORK_REVIEW_INCOMPLETE', 'severity': 'review', 'output_slide': 0,
+                        'message': details.get('message', 'Cover artwork needs review; no uncertain elements were removed.')}]})
         with activity.stage('formatter','compose_slides',sess):
-            report = grounded.build_deck(sess.source_path, str(candidate), revisions=sess.revisions,require_closing=True)
+            report = grounded.build_deck(sess.source_path, str(candidate), revisions=sess.revisions,
+                                        source_decisions=cover_decisions,require_closing=True)
         ai_checks={}
         if mode=='ai':
             from .ai import pipeline
@@ -511,12 +527,17 @@ def public(record):
         value['ai_pipeline']['failure_message']=' '.join(f.get('message','') for f in record['checks'].get('ai_redesign',{}).get('findings',[])) if record['checks'].get('ai_redesign',{}).get('status')=='error' else None
     value['checks'] = {k: {'status': v['status']} for k,v in record['checks'].items()}
     qa=record.get('output_qa',{})
+    confirmations=qa.get('confirmations',[])
+    confirmation=confirmations[-1] if confirmations else {}
     value['qa_execution']={'requests':sum(c.get('request_attempts',1) for c in record.get('output_qa_calls',[])),
         'redesign_reviewed_slides':len({r['output_slide'] for r in (ai or {}).get('final_reviews',[])}),
         'redesign_review_status':record.get('checks',{}).get('ai_visual_review',{}).get('status'),
         'reviewed_slides':len({i for b in qa.get('batches',[]) for i in b['response']['reviewed']}),
         'total_slides':(record.get('report') or {}).get('slide_count',0),
         'complete':bool(qa.get('synthesis')),
+        'confirmation_cases':len(confirmation.get('cases',[])),
+        'refuted_findings':len(confirmation.get('removed_finding_indices',[])),
+        'confirmation_incomplete':bool(confirmation and confirmation.get('status')!='completed'),
         'error':' '.join(f.get('message','') for f in record['checks'].get('output_qa_coverage',{}).get('findings',[]) if f.get('code') in ('OUTPUT_QA_INCOMPLETE','OUTPUT_QA_NO_RENDER'))}
     value['findings'] = [{**{k:v for k,v in f.items() if k not in ('expected','actual','evidence')},
                           'can_approve':can_approve(record,f),'priority':finding_priority(f)} for f in record['findings']]

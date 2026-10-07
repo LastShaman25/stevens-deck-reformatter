@@ -114,6 +114,7 @@ export interface Finding {
   id: string;
   code: string;
   message: string;
+  confirmation_notes?: {ordinal:number;verdict:string;comparison:string}[];
   severity: 'blocking' | 'review' | 'warning' | 'optional_pending';
   output_slide?: number;
   source_slide?: number;
@@ -125,7 +126,7 @@ export interface Generation {
   preserved_image_regions?: number;
   added_slides?: {output_slide:number;kind:string;text:string;authorization:string}[];
   source_decisions?: Record<string,{action:'redesign'|'keep_original';reason:string;removed_artwork:number;extracted_logos?:number}>;
-  qa_execution?: {requests:number;reviewed_slides:number;total_slides:number;complete:boolean;error:string;redesign_reviewed_slides?:number;redesign_review_status?:string};
+  qa_execution?: {requests:number;reviewed_slides:number;total_slides:number;complete:boolean;error:string;redesign_reviewed_slides?:number;redesign_review_status?:string;confirmation_cases?:number;refuted_findings?:number;confirmation_incomplete?:boolean};
   output_qa_repairs?: {attempt: number; targets: number[]; accepted: boolean; reason?: string}[];
   repair_stop_reason?: string | null;
   mode?: 'preserve' | 'ai';

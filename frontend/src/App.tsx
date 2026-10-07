@@ -277,7 +277,7 @@ export default function App({onHome}: {onHome?:()=>void} = {}) {
             <p className="mt-1 text-xs text-stevens-gray">Instructions guide layout and styling. Original wording, chart data, notes, and links remain protected.</p>
             <button className="btn-ghost mt-2" onClick={apply}>Save revision</button>
           </fieldset> : <p className="mt-5 text-sm text-stevens-gray">This added page is included in output QA. Its findings appear below.</p>}
-          <p className="mt-4 text-xs text-stevens-gray">Applies the selected template locally, then runs output QA. Review findings before downloading.</p>
+          <p className="mt-4 text-xs text-stevens-gray">Applies the selected template, removes confirmed source decoration, then runs output QA. Review findings before downloading.</p>
           {generation?.corrections.filter(c => c.index === current).flatMap(c => c.actions).map((a,i) => <p className="mt-2 text-sm" key={i}>{a.action}: <b>{a.status}</b> — {a.message}</p>)}
         </section>
         <aside className="card p-5"><h2 className="text-lg font-bold">Verification</h2>{generation&&<QaExecution generation={generation}/>}

@@ -5,6 +5,9 @@ This directly serves the locked rule: no text out of the box, no overlap.
 """
 from __future__ import annotations
 
+from io import BytesIO
+import math
+
 from pptx.util import Emu
 from pptx.enum.text import MSO_AUTO_SIZE
 
@@ -39,6 +42,47 @@ def overlaps(a, b, tol_frac=0.12):
     sa = max(1, a[2] * a[3])
     sb = max(1, b[2] * b[3])
     return area / min(sa, sb) > tol_frac
+
+
+def white_picture_background(picture, text_bounds, picture_bounds):
+    """Prove that the *whole* text box lies on blank white image pixels.
+
+    PDF graphics can include a page-sized frame around a diagram, with native
+    title text deliberately placed in its empty white area. Its bounding box
+    intersects the title, but its visible artwork does not. This narrow check
+    never treats transparency, near-white pixels, cropped artwork, or unknown
+    picture effects as evidence of a clear background. Callers must also check
+    z-order, text color and untransformed geometry.
+    """
+    try:
+        x, y, w, h = text_bounds
+        px, py, pw, ph = picture_bounds
+        if min(w, h, pw, ph) <= 0 or x < px or y < py or x+w > px+pw or y+h > py+ph:
+            return False
+        # Effects/color transforms can change pixels after the embedded image
+        # is decoded. Keep the ordinary warning when their result is unknown.
+        if picture._element.xpath('./p:blipFill/a:blip/* | ./p:spPr/a:effectLst/* | ./p:spPr/a:effectDag'):
+            return False
+        crop = (picture.crop_left, picture.crop_top, picture.crop_right, picture.crop_bottom)
+        cl, ct, cr, cb = crop
+        if min(crop) < 0 or cl+cr >= 1 or ct+cb >= 1:
+            return False
+        from PIL import Image
+        with Image.open(BytesIO(picture.image.blob)) as image:
+            # Source-rectangle cropping scales the remaining pixels to the
+            # picture frame. Include a pixel beyond each text edge so borders
+            # and antialiased artwork touching the text still require review.
+            iw, ih = image.size
+            left = math.floor((cl+(x-px)/pw*(1-cl-cr))*iw)-1
+            top = math.floor((ct+(y-py)/ph*(1-ct-cb))*ih)-1
+            right = math.ceil((cl+(x+w-px)/pw*(1-cl-cr))*iw)+1
+            bottom = math.ceil((ct+(y+h-py)/ph*(1-ct-cb))*ih)+1
+            if left < 0 or top < 0 or right > iw or bottom > ih:
+                return False
+            pixels = image.crop((left,top,right,bottom)).convert('RGBA')
+            return pixels.getextrema() == ((255,255),)*4
+    except (AttributeError, OSError, ValueError, TypeError, OverflowError):
+        return False
 
 
 def estimate_overflow(sh):

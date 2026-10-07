@@ -58,3 +58,20 @@ test('approval clearly unlocks generation and edits require approval again',asyn
   fireEvent.click(generate);
   await waitFor(()=>expect(requests).toContain('/api/jobs/demo/generate'));
 });
+
+test('failed composition shows its error without requesting a broken preview',async()=>{
+  const generation={generation_id:'failed',candidate_sha256:null,state:'error',download_allowed:false,
+    checks:{build:{status:'error'}},human_decisions:[],corrections:[],findings:[
+      {id:'build:0',code:'AUTHORING_FAILED',check:'build',severity:'blocking',can_approve:false,
+       message:'Generation stopped during composing (ValueError).'}]};
+  const job={id:'demo',request:{source:'topic'},outline:{title:'Example',rationale:'One slide',slides:[
+      {id:'s1',title:'Example',points:['Purpose'],source_pages:[]}]},
+    deck:{slides:[{id:'s1',title:'Example',bullets:[],notes:'',citations:[]}]},
+    revision:1,approved_hash:'approved',pages:[],progress:{},expires_at:1,generation};
+  vi.stubGlobal('fetch',vi.fn(()=>response(job)));
+  render(<Creation onHome={()=>{}}/>);
+  expect(await screen.findByText(/No rendered preview is available/)).toBeVisible();
+  expect(screen.getByText('Generation stopped during composing (ValueError).')).toBeVisible();
+  expect(screen.queryByAltText('Output slide 1')).not.toBeInTheDocument();
+  expect(screen.getByRole('button',{name:'Download'})).toBeDisabled();
+});

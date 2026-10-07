@@ -1,13 +1,16 @@
 """Deterministic graphics. Mathematical input is parsed, never executed."""
 import ast
+import re
 from pathlib import Path
 from threading import Lock
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 from matplotlib import pyplot as plt
+from matplotlib.mathtext import MathTextParser
 
 _lock = Lock()
+_math_parser = MathTextParser('agg')
 FUNCTIONS = {k: getattr(np, v) for k, v in {'sin':'sin', 'cos':'cos', 'tan':'tan', 'sqrt':'sqrt',
     'log':'log', 'log10':'log10', 'exp':'exp', 'abs':'abs', 'arcsin':'arcsin', 'arccos':'arccos'}.items()}
 
@@ -15,7 +18,11 @@ FUNCTIONS = {k: getattr(np, v) for k, v in {'sin':'sin', 'cos':'cos', 'tan':'tan
 def evaluate(expression, x):
     if len(expression) > 300:
         raise ValueError('Function expression is too long.')
-    tree = ast.parse(expression.replace('^', '**'), mode='eval')
+    try:
+        tree = ast.parse(expression.strip().replace('^', '**'), mode='eval')
+    except SyntaxError as exc:
+        raise ValueError("Plot functions must be expressions such as sin(x) or (x-1)/2, without 'y =' assignments. "
+                         'Use only x, pi, e and explicit numeric parameter values.') from exc
     if len(list(ast.walk(tree))) > 80:
         raise ValueError('Function expression is too complex.')
     def visit(node, depth=0):
@@ -26,6 +33,9 @@ def evaluate(expression, x):
             return float(node.value)
         if isinstance(node, ast.Name) and node.id in ('x', 'pi', 'e'):
             return {'x': x, 'pi': np.pi, 'e': np.e}[node.id]
+        if isinstance(node, ast.Name):
+            raise ValueError(f'Undefined plot parameter {node.id!r}. Only x, pi and e are supported; '
+                             'supply source-supported numeric values or label explicitly illustrative choices.')
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
             value = visit(node.operand, depth+1)
             return -value if isinstance(node.op, ast.USub) else value
@@ -42,24 +52,46 @@ def evaluate(expression, x):
         return np.broadcast_to(np.asarray(visit(tree), dtype=float), np.shape(x)).copy()
 
 
+def function_samples(spec):
+    if not spec.functions: raise ValueError('No functions supplied.')
+    if spec.log_x and spec.x_min <= 0: raise ValueError('Log axis requires a positive domain.')
+    x = np.linspace(spec.x_min, spec.x_max, 1201)
+    curves = []
+    for expression in spec.functions:
+        y = evaluate(expression, x)
+        y[~np.isfinite(y)] = np.nan
+        # Break abrupt jumps and poles, including poles between samples.
+        mid = evaluate(expression, (x[:-1]+x[1:])/2)
+        scale = max(1., float(np.nanmedian(np.abs(y))) if np.isfinite(y).any() else 1.)
+        bad = ~np.isfinite(mid) | (np.abs(np.diff(y)) > 20*scale) | (np.abs(mid-(y[:-1]+y[1:])/2) > 5*scale)
+        y[1:][bad] = np.nan
+        if spec.log_y: y[y <= 0] = np.nan
+        if not np.isfinite(y).any(): raise ValueError('Function has no finite values in this domain.')
+        curves.append(y)
+    return x, curves
+
+
+def validate_plot(spec):
+    """Use the same executable grammar/domain checks before accepting AI content."""
+    if spec.kind == 'function':
+        function_samples(spec)
+    elif spec.kind == 'scatter':
+        if not spec.x or len(spec.x) != len(spec.y): raise ValueError('Scatter x/y lengths must match.')
+        if (spec.log_x and min(spec.x)<=0) or (spec.log_y and min(spec.y)<=0): raise ValueError('Log axes require positive data.')
+    elif spec.kind == 'histogram':
+        if not spec.x: raise ValueError('Histogram data is empty.')
+    elif not spec.matrix or not spec.matrix[0] or len({len(row) for row in spec.matrix}) != 1:
+        raise ValueError('Heatmap must be nonempty and rectangular.')
+
+
 def render_plot(spec, path):
+    validate_plot(spec)
     with _lock, matplotlib.rc_context({'font.family':'Arial', 'font.size':16, 'legend.fontsize':14, 'axes.labelsize':16}):
         fig, ax = plt.subplots(figsize=(8, 4), layout='constrained')
         try:
             if spec.kind == 'function':
-                if not spec.functions: raise ValueError('No functions supplied.')
-                if spec.log_x and spec.x_min <= 0: raise ValueError('Log axis requires a positive domain.')
-                x = np.linspace(spec.x_min, spec.x_max, 1201)
-                for expression in spec.functions:
-                    y = evaluate(expression, x)
-                    y[~np.isfinite(y)] = np.nan
-                    # Break abrupt jumps and poles, including poles between samples.
-                    mid = evaluate(expression, (x[:-1]+x[1:])/2)
-                    scale = max(1., float(np.nanmedian(np.abs(y))) if np.isfinite(y).any() else 1.)
-                    bad = ~np.isfinite(mid) | (np.abs(np.diff(y)) > 20*scale) | (np.abs(mid-(y[:-1]+y[1:])/2) > 5*scale)
-                    y[1:][bad] = np.nan
-                    if spec.log_y: y[y <= 0] = np.nan
-                    if not np.isfinite(y).any(): raise ValueError('Function has no finite values in this domain.')
+                x, curves = function_samples(spec)
+                for expression, y in zip(spec.functions, curves):
                     ax.plot(x, y, label=expression)
                 ax.legend()
             elif spec.kind == 'scatter':
@@ -85,14 +117,39 @@ def render_plot(spec, path):
             plt.close(fig)
 
 
-def render_equation(expression, path):
-    # Matplotlib mathtext is an in-process math parser; TeX execution is disabled.
+def equation_lines(expression):
+    # Normalize only exact equivalent aliases unsupported by MathText. Keep the
+    # original authored expression in notes/specification for independent QA.
     if not expression.strip() or len(expression) > 1000 or '$' in expression:
         raise ValueError('Enter math syntax without dollar delimiters (maximum 1000 characters).')
+    aliases = {'le':'leq', 'ge':'geq', 'ne':'neq'}
+    normalized = re.sub(r'\\(le|ge|ne)(?![A-Za-z])', lambda m: '\\'+aliases[m[1]], expression)
+    return normalized.splitlines()
+
+
+def validate_equation(expression):
+    # A single pair of dollar signs across newlines makes Matplotlib silently
+    # render raw LaTeX. Parse each complete line as math before accepting it.
+    lines = equation_lines(expression)
     with _lock, matplotlib.rc_context({'text.usetex': False}):
-        fig = plt.figure(figsize=(10, 2))
+        for number, line in enumerate(lines, 1):
+            if not line.strip(): continue
+            try:
+                _math_parser.parse('$'+line+'$', dpi=180)
+            except (ValueError, RuntimeError) as exc:
+                raise ValueError(f'Unsupported equation syntax on line {number}; use MathText-compatible LaTeX '
+                                 'without dollar signs or environments. Each line must be a complete math expression.') from exc
+    return lines
+
+
+def render_equation(expression, path):
+    # Matplotlib mathtext is an in-process math parser; TeX execution is disabled.
+    lines = validate_equation(expression)
+    with _lock, matplotlib.rc_context({'text.usetex': False}):
+        fig = plt.figure(figsize=(10, max(2, .7*len(lines))))
         try:
-            fig.text(.5, .5, '$'+expression+'$', ha='center', va='center', fontsize=30)
+            math = '\n'.join('$'+line+'$' if line.strip() else '' for line in lines)
+            fig.text(.5, .5, math, ha='center', va='center', fontsize=30)
             fig.savefig(path, dpi=180, bbox_inches='tight', pad_inches=.3, facecolor='white')
         except (ValueError, RuntimeError) as exc:
             raise ValueError('Unsupported equation syntax; use supported LaTeX-style math notation.') from exc
